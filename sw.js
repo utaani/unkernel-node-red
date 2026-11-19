@@ -1,11 +1,11 @@
 const prefix = new URL('editor/', self.registration.scope).pathname;
-const owners = new Map();
+const ownerCache = 'unkernel-editor-owners:' + self.registration.scope;
+const ownerKey = instance => new URL('editor/' + encodeURIComponent(instance) + '/', self.registration.scope);
 self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('message', event => {
   if (!event.data?.instance || !event.ports[0]) return;
-  owners.set(event.data.instance, event.source.id);
-  event.ports[0].postMessage('ready');
+  event.waitUntil(registerOwner(event.data.instance, event.source.id, event.ports[0]));
 });
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
@@ -13,11 +13,32 @@ self.addEventListener('fetch', event => {
     event.respondWith(proxy(event.request, url));
   }
 });
+async function registerOwner(instance, clientId, port) {
+  try {
+    const owners = await caches.open(ownerCache);
+    const keys = await owners.keys();
+    const live = new Set((await self.clients.matchAll({ type: 'window', includeUncontrolled: true })).map(client => client.id));
+    await Promise.all(keys.map(async key => {
+      const entry = await owners.match(key);
+      if (entry && !live.has(await entry.text())) await owners.delete(key);
+    }));
+    await owners.put(ownerKey(instance), new Response(clientId));
+    port.postMessage('ready');
+  } catch (error) {
+    port.postMessage({ error: error.message });
+  }
+}
 async function proxy(request, url) {
   try {
     const [instance, ...parts] = url.pathname.slice(prefix.length).split('/');
-    const client = await self.clients.get(owners.get(instance));
-    if (!client) return new Response('Node-RED session ended. Reload the demo.', { status: 503 });
+    const owners = await caches.open(ownerCache);
+    const key = ownerKey(instance);
+    const entry = await owners.match(key);
+    const client = entry && await self.clients.get(await entry.text());
+    if (!client) {
+      if (entry) await owners.delete(key);
+      return new Response('Node-RED session ended. Reload the demo.', { status: 503 });
+    }
     const channel = new MessageChannel();
     const body = request.body ? await request.arrayBuffer() : undefined;
     const result = await new Promise((resolve, reject) => {

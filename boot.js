@@ -24,7 +24,7 @@ navigator.serviceWorker.addEventListener('message', async ({ data, ports }) => {
 
 async function boot() {
   const registration = await navigator.serviceWorker.register('./sw.js');
-  const { active } = await navigator.serviceWorker.ready;
+  await navigator.serviceWorker.ready;
   const image = await fetch('./node-red.kwsparse.gz');
   if (!image.ok) throw new Error('イメージを取得できませんでした。HTTP ' + image.status);
   const disk = { kind: 'data', name: 'unkernel-node-red-demo', mode: 'snapshot',
@@ -56,9 +56,10 @@ async function boot() {
   await ready;
   const channel = new MessageChannel();
   const registered = new Promise(resolve => { channel.port1.onmessage = resolve; });
-  (active || registration.active).postMessage({ instance }, [channel.port2]);
-  await registered;
+  registration.active.postMessage({ instance }, [channel.port2]);
+  const { data: registrationResult } = await registered;
   channel.port1.close();
+  if (registrationResult?.error) throw new Error(registrationResult.error);
   const editor = document.createElement('iframe');
   editor.title = 'Node-RED エディター';
   editor.src = './editor/' + instance + '/';
