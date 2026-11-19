@@ -2,12 +2,12 @@
 
 [ブラウザでデモを開く](https://utaani.github.io/unkernel-node-red/)
 
-unkernel を使って、Alpine Linux（riscv64）と Node-RED をブラウザ内で起動するデモです。GitHub Pages が配信するファイルを読み込むと、空の Node-RED エディターが開きます。Node-RED は閲覧者の端末で動作し、SSH や Node.js のインストールは不要です。
+[unkernel](https://github.com/pithings/unkernel) を使って、[Node-RED](https://github.com/node-red/node-red) をブラウザ内で起動するデモです。GitHub Pages が配信するファイルを読み込むと、空の Node-RED エディターが開きます。Node-RED は閲覧者のブラウザ内で動作し、サーバーをデプロイせず、 Node-RED のお試しが可能です。
 
 ## 試し方
 
 1. WebAssembly JSPI に対応するブラウザでデモを開きます。Chromium 156 で動作を確認しています。
-2. 起動が終わると、空の「フロー 1」が表示されます。初回の配信量は約 62 MiB で、Pi 5 での起動は約 1〜2 分でした。
+2. 起動が終わると、空の「フロー 1」が表示されます。初回の配信量は約 62 MiB で、起動は約 1〜2 分でした。
 3. たとえば Inject ノードと Debug ノードをつなぎ、デプロイしてから Inject のボタンを押すと、Debug 欄にメッセージが出ます。
 
 編集内容はそのタブの試用環境に保存されます。ページを再読み込みすると初期状態に戻るので、残したいフローは Node-RED のメニューから JSON にエクスポートしてください。
