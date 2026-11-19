@@ -45,7 +45,7 @@ async function proxy(request, url) {
       const timer = setTimeout(() => {
         channel.port1.close();
         reject(new Error('Guest request timed out'));
-      }, 30000);
+      }, request.method === "POST" && parts.join("/") === "nodes" ? 120000 : 30000);
       channel.port1.onmessage = ({ data }) => {
         clearTimeout(timer);
         channel.port1.close();
