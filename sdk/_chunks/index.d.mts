@@ -443,7 +443,8 @@ export interface KwemuStats {
   /**
    * kwemu.Stats as 64-bit words, in the layout of src/emu/kwemu.zig: 11
    * counters, op_hist[192], JIT insns, hand-backs, hb[192], hb_gen[40],
-   * jx[64] (indices in src/emu/jit.zig Jx).
+   * jx[64] (indices in src/emu/jitcore.zig Jx), gen_words[3 * 512] (A64:
+   * `generic` ops by word, kwemu.zig countGenWord).
    */
   words: number[];
 }
@@ -466,6 +467,8 @@ export interface JitHostOptions {
    */
   mirror?: Float64Array;
 }
+/** Whether this engine compiles fixed-width SIMD (cap bit 5). */
+export declare function jitSimd(): boolean;
 export declare class JitHost {
   #private;
   readonly stats: JitStats;
@@ -1097,6 +1100,309 @@ export declare class MemoryFs implements Fs {
   setattr(path: string, attr: FsSetAttr): void;
   statfs(): FsStatFs;
 }
+/** The guest server's vsock port (guest/src/kwtty.c KWTTY_PORT). Privileged, so no unprivileged guest program can take it. */
+export declare const TTY_PORT = 1022;
+/** The protocol version this client speaks (OPEN's max_version). */
+export declare const TTY_VERSION = 1;
+/** OPENED feature bit: the guest has PIPES, EOF and STDERR. */
+export declare const TTY_FEATURE_PIPES = 1;
+/** OPENED feature bit: the guest has CONNECT (connectGuest()). */
+export declare const TTY_FEATURE_CONNECT = 2;
+/** The signals kill() can send (kwtty.c has the same list). */
+export declare const TTY_SIGNALS: readonly ["HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS", "FPE", "KILL", "USR1", "SEGV", "USR2", "PIPE", "ALRM", "TERM", "CHLD", "CONT", "STOP", "TSTP", "TTIN", "TTOU", "URG", "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "IO", "PWR", "SYS"];
+export type PtyErrorCode =
+/** No guest server answered within the timeout (or no OPENED came). */
+"ETIMEDOUT" |
+/** A malformed frame, an unknown critical frame, or a version the client does not speak. */
+"EPROTO" |
+/** The guest sent ERROR; the message is the guest's (a failed exec or chdir; a guest without PIPES refuses `pty: false`, one without CONNECT refuses connectGuest()). */
+"EREMOTE" |
+/** connectGuest(): nothing listens on that TCP port on the guest's 127.0.0.1. */
+"ECONNREFUSED" |
+/** The signal was aborted while opening (or, for exec(), while the program ran: it is killed). */
+"ABORTED" |
+/** The connection ended before OPENED (or, for exec(), before EXIT). */
+"ECONNRESET" |
+/** The kernel exited. */
+"ECONNABORTED" |
+/** write() after the session ended, or the connection failed under it. */
+"EPIPE" |
+/** spawn(), exec() or connect() on an instance created with `vsock: false`. */
+"ENODEV" |
+/** exec(): stdout or stderr went over `maxBuffer` (the program is killed). */
+"ENOBUFS";
+/** Why a pty could not be spawned, or failed. */
+export declare class PtyError extends Error {
+  readonly code: PtyErrorCode;
+  constructor(code: PtyErrorCode, message: string, cause?: unknown);
+}
+/** A window size; pixels are 0 when unknown. */
+export interface PtySize {
+  cols: number;
+  rows: number;
+  xpixel?: number;
+  ypixel?: number;
+}
+/** What spawn() on a pty, spawn() on pipes and exec() take. */
+export interface SpawnOptions {
+  /** The program's working directory. Default root's home. */
+  cwd?: string;
+  /** Extra environment, applied after the defaults (HOME, USER, LOGNAME, SHELL, PATH, and TERM on a pty), so it may override them. */
+  env?: Record<string, string>;
+  /** The guest server's port. Default TTY_PORT (1022). */
+  port?: number;
+  /** How long to wait for the guest server, in ms: connect retries (it may not be up yet) and the handshake together. Default 30000. */
+  timeout?: number;
+  /** Aborts spawning (PtyError ABORTED). It has no effect once the program runs, except in exec(). */
+  signal?: AbortSignal;
+}
+export interface PtyOptions extends SpawnOptions, Partial<PtySize> {
+  /** On a pty (the default). */
+  pty?: true;
+  /** Default 80 columns by 24 rows. */
+  cols?: number;
+  rows?: number;
+  /** TERM for the program (printable ASCII, at most 64 bytes). Default "xterm-256color". */
+  term?: string;
+}
+/** spawn() on pipes: stdin, stdout and stderr are pipes, with no pty (and no TERM unless `env` sets it). */
+export interface PipeOptions extends SpawnOptions {
+  pty: false;
+}
+export interface ExecOptions extends SpawnOptions {
+  /** Bytes for stdin (strings are UTF-8), then EOF. Default: EOF at once. */
+  input?: Uint8Array | string;
+  /** "utf8" (the default): stdout and stderr as strings; "buffer": as bytes. */
+  encoding?: "utf8" | "buffer";
+  /** The most bytes stdout and stderr may hold, each; beyond it the program gets SIGKILL and exec() rejects with ENOBUFS. Default 64 MiB. */
+  maxBuffer?: number;
+  /** Also aborts the run: the program gets SIGKILL and exec() rejects with ABORTED. */
+  signal?: AbortSignal;
+}
+/** How exec()'s program ended, and what it printed. */
+export interface ExecResult<T extends string | Uint8Array = string> {
+  stdout: T;
+  stderr: T;
+  /** The exit status, or null when a signal ended the program. */
+  exitCode: number | null;
+  /** The signal's number in the guest, or null when the program exited. */
+  signal: number | null;
+}
+export type PtyEnd =
+/** The program exited with `code`. */
+{
+  type: "exit";
+  code: number;
+} |
+/** The program was killed by `signal` (its number in the guest). */
+{
+  type: "signal";
+  signal: number;
+  coreDumped: boolean;
+} |
+/** The host called close(). */
+{
+  type: "closed";
+} |
+/** EOF or a reset without EXIT, or the kernel exited. */
+{
+  type: "lost";
+};
+export interface Pty extends AsyncDisposable {
+  /** The program's pid in the guest. */
+  readonly pid: number;
+  /** The pty's number: the program's terminal is /dev/pts/<pts>. */
+  readonly pts: number;
+  /** The size last set (spawn options, then resize()). */
+  readonly cols: number;
+  readonly rows: number;
+  /** The exit status once `ended` settled with an exit, else null. */
+  readonly exitCode: number | null;
+  /** The protocol version both sides agreed on. */
+  readonly version: number;
+  /** The guest's feature bits (TTY_FEATURE_PIPES). */
+  readonly features: number;
+  /**
+   * What the pty prints. A pull stream: vsock credit follows what is read,
+   * so keep reading, or the guest program blocks once the window is full.
+   * It ends after EXIT, close() or a lost connection, and errors with the
+   * PtyError that `ended` rejects with. Cancelling it discards the
+   * rest, so `ended` still settles.
+   */
+  readonly output: ReadableStream<Uint8Array>;
+  /** Type into the pty. Strings are UTF-8. Split into DATA frames of at most 4096 bytes; resolves once they are sent. */
+  write(data: Uint8Array | string): Promise<void>;
+  /** Set the window size (the foreground process gets SIGWINCH). Ordered with write(). */
+  resize(cols: number, rows: number, xpixel?: number, ypixel?: number): void;
+  /**
+   * Send a signal to the program ("SIGTERM" or "TERM"; default SIGHUP).
+   * `ended` then reports how it ended. Ordered with write(); a no-op once
+   * the pty has ended. Throws a RangeError for an unknown name.
+   */
+  kill(signal?: string): void;
+  /** Hang up (the session gets SIGHUP): closes the connection both ways. Resolves once the connection is gone. */
+  close(): Promise<void>;
+  /**
+   * How the session ended. Settles once `output` has been read up to the
+   * end (EXIT comes behind the shell's last output), or at close().
+   * Rejects with a PtyError (EREMOTE, EPROTO) if the session failed.
+   */
+  readonly ended: Promise<PtyEnd>;
+  /** `await using`: close(). */
+  [Symbol.asyncDispose](): Promise<void>;
+}
+/** A program on pipes: spawn(file, args, { pty: false }). */
+export interface Subprocess extends AsyncDisposable {
+  /** The program's pid in the guest, the leader of its own session. */
+  readonly pid: number;
+  /** The exit status once `ended` settled with an exit, else null. */
+  readonly exitCode: number | null;
+  /** The protocol version both sides agreed on. */
+  readonly version: number;
+  /** The guest's feature bits (TTY_FEATURE_PIPES). */
+  readonly features: number;
+  /**
+   * The program's stdin. Strings are UTF-8, sent in DATA frames of at most
+   * 4096 bytes. close() sends EOF (the program reads end of file); a write
+   * after the session ended rejects with EPIPE.
+   */
+  readonly stdin: WritableStream<Uint8Array | string>;
+  /**
+   * What the program writes to stdout and stderr, byte for byte. Pull
+   * streams on one connection: the connection is read while either is
+   * read, and output for the other is held until it is read, so read both,
+   * or cancel the one you do not want (that discards it). They end after
+   * EXIT, close() or a lost connection.
+   */
+  readonly stdout: ReadableStream<Uint8Array>;
+  readonly stderr: ReadableStream<Uint8Array>;
+  /** Send a signal to the program ("SIGINT" or "INT"; default SIGTERM). As Pty.kill(). */
+  kill(signal?: string): void;
+  /** Hang up: the program's process group gets SIGHUP, and the connection closes both ways. */
+  close(): Promise<void>;
+  /** How the session ended. Settles once stdout and stderr have been read (or cancelled) up to EXIT, or at close(). */
+  readonly ended: Promise<PtyEnd>;
+  /** `await using`: close(). */
+  [Symbol.asyncDispose](): Promise<void>;
+}
+/** One frame as received. */
+export interface TtyFrame {
+  type: number;
+  flags: number;
+  payload: Uint8Array;
+}
+/** A frame: header and payload (copied). */
+export declare function encodeTtyFrame(type: number, payload?: Uint8Array, flags?: number): Uint8Array;
+/** RESIZE's payload (on the wire rows come first, as in struct winsize). */
+export declare function encodeTtyResize(s: PtySize): Uint8Array;
+/**
+ * OPEN's payload: max_version, the size, then TERM, one ENV option per
+ * entry, ARG options (`file`, then `args`), CWD, PIPES and CONNECT. With
+ * `pipes` or `connect`, TERM goes only when `term` is given. Throws a RangeError for values the
+ * guest would refuse.
+ */
+export declare function encodeTtyOpen(opts: PtySize & {
+  term?: string;
+  env?: Record<string, string>;
+  cwd?: string;
+  file?: string;
+  args?: readonly string[];
+  pipes?: boolean;
+  connect?: number;
+}): Uint8Array;
+/**
+ * Splits a byte stream into frames, however it is chunked. push() what
+ * arrives, then take whole frames with next(). A payload within one chunk
+ * is a view of it, else a copy.
+ */
+export declare class TtyFrameParser {
+  #private;
+  /** Bytes held that do not make a whole frame yet. */
+  get buffered(): number;
+  push(chunk: Uint8Array): void;
+  /** The next whole frame, without taking it. */
+  peek(): TtyFrame | undefined;
+  /** Take the next whole frame. */
+  next(): TtyFrame | undefined;
+  /** Take every byte held, frames not taken yet included, as they arrived (for a switch to raw bytes). */
+  rest(): Uint8Array;
+}
+/**
+ * Run `file` with `args` on a new pty in the guest (no file: root's login
+ * shell; a file without "/" is looked up in PATH): connect to the guest's
+ * kwtty server (retrying while it is not up yet), send OPEN, and wait for
+ * OPENED. Rejects with a PtyError (ETIMEDOUT, EREMOTE with the guest's
+ * message, e.g. a failed exec or chdir, EPROTO, ABORTED, ECONNRESET,
+ * ECONNABORTED), or a RangeError for bad options.
+ */
+export declare function spawnPty(vsock: Vsock, file?: string, args?: readonly string[], opts?: PtyOptions): Promise<Pty>;
+/**
+ * Run `file` with `args` in the guest on pipes (stdin, stdout and stderr;
+ * no file: root's login shell, reading stdin), as spawnPty() otherwise. A
+ * guest without PIPES (a kernel from before them) refuses it: EREMOTE.
+ */
+export declare function spawnSubprocess(vsock: Vsock, file?: string, args?: readonly string[], opts?: SpawnOptions): Promise<Subprocess>;
+/**
+ * Run `file` with `args` on pipes, feed it `input`, and resolve with what
+ * it printed on stdout and stderr and how it ended, once it ended. A
+ * non-zero exit or a signal resolves too. Rejects with a PtyError as
+ * spawnSubprocess(), or ENOBUFS (output over `maxBuffer`), ABORTED (the
+ * signal; the program gets SIGKILL), ECONNRESET (the session was lost:
+ * the kernel exited).
+ */
+export declare function execSubprocess(vsock: Vsock, file: string, args?: readonly string[], opts?: ExecOptions & {
+  encoding?: "utf8";
+}): Promise<ExecResult<string>>;
+export declare function execSubprocess(vsock: Vsock, file: string, args: readonly string[] | undefined, opts: ExecOptions & {
+  encoding: "buffer";
+}): Promise<ExecResult<Uint8Array>>;
+export declare function execSubprocess(vsock: Vsock, file: string, args?: readonly string[], opts?: ExecOptions): Promise<ExecResult<string | Uint8Array>>;
+/** What connectGuest() takes. */
+export interface ConnectOptions {
+  /** How long to wait, in ms: for the guest server (connect retries), its TCP connect and the handshake together. Default 30000. */
+  timeout?: number;
+  /** Aborts connecting (PtyError ABORTED). It has no effect once connected: cancel `readable` or call close(). */
+  signal?: AbortSignal;
+  /** The guest server's (kwtty's) vsock port. Default TTY_PORT (1022). */
+  ttyPort?: number;
+}
+/**
+ * A raw byte stream to a TCP server in the guest (connectGuest()). It has
+ * the shape of a ByteDuplex (http.ts), so fetchOver() can use it.
+ */
+export interface GuestSocket extends AsyncDisposable {
+  /** The guest's TCP port. */
+  readonly port: number;
+  /**
+   * What the server sends. A pull stream: vsock credit follows what is
+   * read. It ends when the server shuts down its sending side (or
+   * closes), and errors with a VsockError on a reset. Cancelling it tells
+   * the guest the host no longer reads, which ends the connection.
+   */
+  readonly readable: ReadableStream<Uint8Array>;
+  /**
+   * Bytes for the server; a write resolves once its bytes are sent.
+   * close() is a half-close: the server reads EOF and may still send.
+   * abort() resets the connection.
+   */
+  readonly writable: WritableStream<Uint8Array>;
+  /** Close both ways (what was written is still sent; what was not read is dropped). Resolves once the connection is gone. */
+  close(): Promise<void>;
+  /** Settles once the connection is gone: "closed" (both sides shut down) or "reset". */
+  readonly closed: Promise<"closed" | "reset">;
+  /** `await using`: close(). */
+  [Symbol.asyncDispose](): Promise<void>;
+}
+/**
+ * Connect to TCP `port` on the guest's 127.0.0.1 through the guest's kwtty
+ * server (CONNECT; retrying while kwtty is not up yet). The guest connects
+ * before it answers, so the promise resolves with a connected GuestSocket,
+ * or rejects with a PtyError: ECONNREFUSED (nothing listens on the port),
+ * EREMOTE (another connect error, with the guest's message, or a guest
+ * without CONNECT), ETIMEDOUT, ABORTED, ECONNRESET, ECONNABORTED, EPROTO;
+ * a RangeError for a port outside 1 to 65535.
+ */
+export declare function connectGuest(vsock: Vsock, port: number, opts?: ConnectOptions): Promise<GuestSocket>;
 /** A file system to mount: an Fs (MemoryFs, nodeFs(), your own) or a plain object tree (made a MemoryFs). */
 export type FsSource = Fs | FsTree;
 export interface MountOptions {
@@ -2348,11 +2654,53 @@ export declare class CowDisk implements BlockDevice {
     parts: BlobPart[];
   }>;
 }
+/** The distro header in the first bytes of an image (format: distro.ts). */
+export interface DistroHeader {
+  /** The image's size when it was built (a header of another size is ignored). */
+  size: number;
+  /** Bytes from the start of the image that a boot reads (= size: the whole image; 0: no hint). */
+  prefetch: number;
+  /** The distro's name (/usr/lib/kw-distro) and image id (/usr/lib/kw-image). */
+  distro: string;
+  image: string;
+}
+/** The distro header at offset 0 of an image, or null (none, another version, or another size than `size`). */
+export declare function readDistroHeader(head: Uint8Array, size?: number): DistroHeader | null;
 export interface HttpBaseOptions {
   /** Fetch granularity (power of two), default 256 KiB. */
   chunkSize?: number;
   /** Largest single Range request, default 4 MiB. */
   maxRequest?: number;
+  /**
+   * Every range must come from the image open() saw: the same total size
+   * and, when open() got one, the same ETag (or Last-Modified). A range of
+   * a changed image then fails (EIO in the guest) instead of mixing two
+   * images' blocks. Default false.
+   */
+  strict?: boolean;
+  /**
+   * Fetch the first `prefetch` bytes right after open(), in one streaming
+   * request (the image's size: one plain GET of the whole image, which
+   * HTTP caches keep). Reads inside it wait for its bytes instead of
+   * making their own requests; reads after it are lazy ranges, and so is
+   * everything if it fails. Default: what the image's distro header says
+   * (distro.ts), else nothing; false: nothing.
+   */
+  prefetch?: number | false;
+  /** Host diagnostics (a failed prefetch); default console.warn. */
+  log?: (msg: string) => void;
+}
+/** What an HttpBase fetched (HttpBase.stats). */
+export interface HttpBaseStats {
+  /** Requests (open()'s probe included) and the bytes they brought. */
+  requests: number;
+  bytes: number;
+  /** Range requests made for reads (not the probe or the prefetch). */
+  lazyRequests: number;
+  /** The prefetch: its size (0: none), the bytes it brought, and how it went. */
+  prefetch: number;
+  prefetchBytes: number;
+  prefetchState: "none" | "running" | "done" | "failed";
 }
 export declare class HttpBase implements DiskBase {
   #private;
@@ -2363,318 +2711,123 @@ export declare class HttpBase implements DiskBase {
   maxChunks: number;
   /** Chunk index -> data. */
   chunks: Map<number, Uint8Array>;
-  /** Chunk index -> fetch in flight. */
+  /** Chunk index -> fetch in flight (a prefetched chunk: until its bytes arrived). */
   pending: Map<number, Promise<void>>;
-  stats: {
-    requests: number;
-    bytes: number;
-  };
-  static open(url: string, { chunkSize, maxRequest }?: HttpBaseOptions): Promise<HttpBase>;
+  stats: HttpBaseStats;
+  /** strict: the ETag or Last-Modified open() saw ("" if none), which every range must carry. */
+  validator: string | null;
+  /** The distro header of the image, if it has one. */
+  header: DistroHeader | null;
+  log: (msg: string) => void;
+  /**
+   * Open the image: one Range request for its first chunk, which tells the
+   * size, the validator and the distro header (and is kept). Then the
+   * prefetch, if any, starts (see HttpBaseOptions.prefetch).
+   */
+  static open(url: string, { chunkSize, maxRequest, strict, prefetch, log }?: HttpBaseOptions): Promise<HttpBase>;
   read(off: number, len: number): MaybePromise<Uint8Array>;
 }
-/** The guest server's vsock port (kernel/guest/kwtty.c KWTTY_PORT). Privileged, so no unprivileged guest program can take it. */
-export declare const TTY_PORT = 1022;
-/** The protocol version this client speaks (OPEN's max_version). */
-export declare const TTY_VERSION = 1;
-/** OPENED feature bit: the guest has PIPES, EOF and STDERR. */
-export declare const TTY_FEATURE_PIPES = 1;
-/** OPENED feature bit: the guest has CONNECT (connectGuest()). */
-export declare const TTY_FEATURE_CONNECT = 2;
-/** The signals kill() can send (kwtty.c has the same list). */
-export declare const TTY_SIGNALS: readonly ["HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS", "FPE", "KILL", "USR1", "SEGV", "USR2", "PIPE", "ALRM", "TERM", "CHLD", "CONT", "STOP", "TSTP", "TTIN", "TTOU", "URG", "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "IO", "PWR", "SYS"];
-export type PtyErrorCode =
-/** No guest server answered within the timeout (or no OPENED came). */
-"ETIMEDOUT" |
-/** A malformed frame, an unknown critical frame, or a version the client does not speak. */
-"EPROTO" |
-/** The guest sent ERROR; the message is the guest's (a failed exec or chdir; a guest without PIPES refuses `pty: false`, one without CONNECT refuses connectGuest()). */
-"EREMOTE" |
-/** connectGuest(): nothing listens on that TCP port on the guest's 127.0.0.1. */
-"ECONNREFUSED" |
-/** The signal was aborted while opening (or, for exec(), while the program ran: it is killed). */
-"ABORTED" |
-/** The connection ended before OPENED (or, for exec(), before EXIT). */
-"ECONNRESET" |
-/** The kernel exited. */
-"ECONNABORTED" |
-/** write() after the session ended, or the connection failed under it. */
-"EPIPE" |
-/** spawn(), exec() or connect() on an instance created with `vsock: false`. */
-"ENODEV" |
-/** exec(): stdout or stderr went over `maxBuffer` (the program is killed). */
-"ENOBUFS";
-/** Why a pty could not be spawned, or failed. */
-export declare class PtyError extends Error {
-  readonly code: PtyErrorCode;
-  constructor(code: PtyErrorCode, message: string, cause?: unknown);
+/**
+ * A read-only BlockDevice that reads a DiskBase (e.g. an HttpBase) with no
+ * overlay: the guest's writes fail with EROFS. In a snapshot it is the
+ * base's identity.
+ */
+export declare class BaseDisk implements BlockDevice {
+  base: DiskBase;
+  size: number;
+  readonly readOnly = true;
+  readonly flags = 1;
+  constructor(base: DiskBase);
+  /** The base's fetch counters (an HttpBase's, see HttpBaseStats), if it keeps any. */
+  get stats(): HttpBaseStats | undefined;
+  read(off: number, views: Uint8Array[]): MaybePromise<void>;
+  write(): never;
+  snapshotState(): DiskSnapshotState;
+  snapshotSeal(): {
+    state: DiskSnapshotState;
+    done: Promise<void>;
+  };
 }
-/** A window size; pixels are 0 when unknown. */
-export interface PtySize {
-  cols: number;
-  rows: number;
-  xpixel?: number;
-  ypixel?: number;
-}
-/** What spawn() on a pty, spawn() on pipes and exec() take. */
-export interface SpawnOptions {
-  /** The program's working directory. Default root's home. */
-  cwd?: string;
-  /** Extra environment, applied after the defaults (HOME, USER, LOGNAME, SHELL, PATH, and TERM on a pty), so it may override them. */
-  env?: Record<string, string>;
-  /** The guest server's port. Default TTY_PORT (1022). */
-  port?: number;
-  /** How long to wait for the guest server, in ms: connect retries (it may not be up yet) and the handshake together. Default 30000. */
-  timeout?: number;
-  /** Aborts spawning (PtyError ABORTED). It has no effect once the program runs, except in exec(). */
-  signal?: AbortSignal;
-}
-export interface PtyOptions extends SpawnOptions, Partial<PtySize> {
-  /** On a pty (the default). */
-  pty?: true;
-  /** Default 80 columns by 24 rows. */
-  cols?: number;
-  rows?: number;
-  /** TERM for the program (printable ASCII, at most 64 bytes). Default "xterm-256color". */
-  term?: string;
-}
-/** spawn() on pipes: stdin, stdout and stderr are pipes, with no pty (and no TERM unless `env` sets it). */
-export interface PipeOptions extends SpawnOptions {
-  pty: false;
-}
-export interface ExecOptions extends SpawnOptions {
-  /** Bytes for stdin (strings are UTF-8), then EOF. Default: EOF at once. */
-  input?: Uint8Array | string;
-  /** "utf8" (the default): stdout and stderr as strings; "buffer": as bytes. */
-  encoding?: "utf8" | "buffer";
-  /** The most bytes stdout and stderr may hold, each; beyond it the program gets SIGKILL and exec() rejects with ENOBUFS. Default 64 MiB. */
-  maxBuffer?: number;
-  /** Also aborts the run: the program gets SIGKILL and exec() rejects with ABORTED. */
-  signal?: AbortSignal;
-}
-/** How exec()'s program ended, and what it printed. */
-export interface ExecResult<T extends string | Uint8Array = string> {
-  stdout: T;
-  stderr: T;
-  /** The exit status, or null when a signal ended the program. */
-  exitCode: number | null;
-  /** The signal's number in the guest, or null when the program exited. */
-  signal: number | null;
-}
-export type PtyEnd =
-/** The program exited with `code`. */
-{
-  type: "exit";
-  code: number;
-} |
-/** The program was killed by `signal` (its number in the guest). */
-{
-  type: "signal";
-  signal: number;
-  coreDumped: boolean;
-} |
-/** The host called close(). */
-{
-  type: "closed";
-} |
-/** EOF or a reset without EXIT, or the kernel exited. */
-{
-  type: "lost";
-};
-export interface Pty extends AsyncDisposable {
-  /** The program's pid in the guest. */
+/** The host port kwcmd connects to (guest/src/kwcmd.c KWCMD_PORT). */
+export declare const CMD_PORT = 1020;
+/** What a host command gets: the guest process that runs it. */
+export interface HostCommandContext {
+  /** The name the command was run by. */
+  readonly name: string;
+  /** Its arguments, without the name. */
+  readonly args: readonly string[];
+  /** The guest process's environment. */
+  readonly env: Readonly<Record<string, string>>;
+  /** The guest process's working directory. */
+  readonly cwd: string;
+  /** The guest process: its pid, and the user and group it runs as. */
   readonly pid: number;
-  /** The pty's number: the program's terminal is /dev/pts/<pts>. */
-  readonly pts: number;
-  /** The size last set (spawn options, then resize()). */
+  readonly uid: number;
+  readonly gid: number;
+  /** Which of the guest process's stdin, stdout and stderr are terminals. */
+  readonly isTTY: {
+    readonly stdin: boolean;
+    readonly stdout: boolean;
+    readonly stderr: boolean;
+  };
+  /** The terminal's size when the command started (0 without a terminal). */
   readonly cols: number;
   readonly rows: number;
-  /** The exit status once `ended` settled with an exit, else null. */
-  readonly exitCode: number | null;
-  /** The protocol version both sides agreed on. */
-  readonly version: number;
-  /** The guest's feature bits (TTY_FEATURE_PIPES). */
-  readonly features: number;
   /**
-   * What the pty prints. A pull stream: vsock credit follows what is read,
-   * so keep reading, or the guest program blocks once the window is full.
-   * It ends after EXIT, close() or a lost connection, and errors with the
-   * PtyError that `ended` rejects with. Cancelling it discards the
-   * rest, so `ended` still settles.
+   * The guest process's stdin. A pull stream: the guest reads its stdin
+   * once for each read here (up to 16 KiB), so a command leaves alone what
+   * it does not read (a terminal's typeahead, the rest of a pipe). It ends
+   * at end of file, or when the guest process is gone.
    */
-  readonly output: ReadableStream<Uint8Array>;
-  /** Type into the pty. Strings are UTF-8. Split into DATA frames of at most 4096 bytes; resolves once they are sent. */
-  write(data: Uint8Array | string): Promise<void>;
-  /** Set the window size (the foreground process gets SIGWINCH). Ordered with write(). */
-  resize(cols: number, rows: number, xpixel?: number, ypixel?: number): void;
+  readonly stdin: ReadableStream<Uint8Array>;
   /**
-   * Send a signal to the program ("SIGTERM" or "TERM"; default SIGHUP).
-   * `ended` then reports how it ended. Ordered with write(); a no-op once
-   * the pty has ended. Throws a RangeError for an unknown name.
+   * The guest process's stdout and stderr; strings are UTF-8. A write
+   * resolves once the guest took it, and rejects when the guest process
+   * is gone. What was written when the handler returns is still sent.
    */
-  kill(signal?: string): void;
-  /** Hang up (the session gets SIGHUP): closes the connection both ways. Resolves once the connection is gone. */
-  close(): Promise<void>;
-  /**
-   * How the session ended. Settles once `output` has been read up to the
-   * end (EXIT comes behind the shell's last output), or at close().
-   * Rejects with a PtyError (EREMOTE, EPROTO) if the session failed.
-   */
-  readonly ended: Promise<PtyEnd>;
-  /** `await using`: close(). */
-  [Symbol.asyncDispose](): Promise<void>;
+  readonly stdout: WritableStream<Uint8Array | string>;
+  readonly stderr: WritableStream<Uint8Array | string>;
+  /** Aborts when the guest process is gone before the handler returned (killed, Ctrl-C, a closed pipe, the kernel exited). */
+  readonly signal: AbortSignal;
 }
-/** A program on pipes: spawn(file, args, { pty: false }). */
-export interface Subprocess extends AsyncDisposable {
-  /** The program's pid in the guest, the leader of its own session. */
-  readonly pid: number;
-  /** The exit status once `ended` settled with an exit, else null. */
-  readonly exitCode: number | null;
-  /** The protocol version both sides agreed on. */
-  readonly version: number;
-  /** The guest's feature bits (TTY_FEATURE_PIPES). */
-  readonly features: number;
-  /**
-   * The program's stdin. Strings are UTF-8, sent in DATA frames of at most
-   * 4096 bytes. close() sends EOF (the program reads end of file); a write
-   * after the session ended rejects with EPIPE.
-   */
-  readonly stdin: WritableStream<Uint8Array | string>;
-  /**
-   * What the program writes to stdout and stderr, byte for byte. Pull
-   * streams on one connection: the connection is read while either is
-   * read, and output for the other is held until it is read, so read both,
-   * or cancel the one you do not want (that discards it). They end after
-   * EXIT, close() or a lost connection.
-   */
-  readonly stdout: ReadableStream<Uint8Array>;
-  readonly stderr: ReadableStream<Uint8Array>;
-  /** Send a signal to the program ("SIGINT" or "INT"; default SIGTERM). As Pty.kill(). */
-  kill(signal?: string): void;
-  /** Hang up: the program's process group gets SIGHUP, and the connection closes both ways. */
-  close(): Promise<void>;
-  /** How the session ended. Settles once stdout and stderr have been read (or cancelled) up to EXIT, or at close(). */
-  readonly ended: Promise<PtyEnd>;
-  /** `await using`: close(). */
-  [Symbol.asyncDispose](): Promise<void>;
+/** What a host command returns (see HostCommand). */
+export type HostCommandResult = number | string | Uint8Array | {
+  exitCode?: number;
+  signal?: string;
+} | void;
+/**
+ * A host command: called once per guest process that runs it. What it
+ * returns ends that process: a number (or { exitCode }) is its exit
+ * status (0 to 255), a string or bytes are written to its stdout (status
+ * 0), nothing is status 0, and { signal } ("SIGTERM" or "TERM", one of
+ * TTY_SIGNALS) makes it die by that signal, as its parent then sees
+ * (a shell's $? is 128 + the number). A throw (or rejection) prints the
+ * error's message on its stderr and exits 1.
+ */
+export type HostCommand = (ctx: HostCommandContext) => HostCommandResult | Promise<HostCommandResult>;
+export type CommandErrorCode =
+/** The instance has no vsock device. */
+"ENODEV" |
+/** The guest has no kwcmd (an image from before host commands). */
+"ENOENT" |
+/** A name that is not a command name, or a handler that is not a function. */
+"EINVAL" |
+/** vsock port 1020 is taken by another listener of the host. */
+"EADDRINUSE" |
+/** The guest did not finish within the timeout (no kwtty answered). */
+"ETIMEDOUT" |
+/** The kernel exited. */
+"ECONNABORTED" |
+/** The guest failed otherwise (the message has its words). */
+"EREMOTE";
+export declare class CommandError extends Error {
+  readonly code: CommandErrorCode;
+  constructor(code: CommandErrorCode, message: string, cause?: unknown);
 }
-/** One frame as received. */
-export interface TtyFrame {
-  type: number;
-  flags: number;
-  payload: Uint8Array;
-}
-/** A frame: header and payload (copied). */
-export declare function encodeTtyFrame(type: number, payload?: Uint8Array, flags?: number): Uint8Array;
-/** RESIZE's payload (on the wire rows come first, as in struct winsize). */
-export declare function encodeTtyResize(s: PtySize): Uint8Array;
-/**
- * OPEN's payload: max_version, the size, then TERM, one ENV option per
- * entry, ARG options (`file`, then `args`), CWD, PIPES and CONNECT. With
- * `pipes` or `connect`, TERM goes only when `term` is given. Throws a RangeError for values the
- * guest would refuse.
- */
-export declare function encodeTtyOpen(opts: PtySize & {
-  term?: string;
-  env?: Record<string, string>;
-  cwd?: string;
-  file?: string;
-  args?: readonly string[];
-  pipes?: boolean;
-  connect?: number;
-}): Uint8Array;
-/**
- * Splits a byte stream into frames, however it is chunked. push() what
- * arrives, then take whole frames with next(). A payload within one chunk
- * is a view of it, else a copy.
- */
-export declare class TtyFrameParser {
-  #private;
-  /** Bytes held that do not make a whole frame yet. */
-  get buffered(): number;
-  push(chunk: Uint8Array): void;
-  /** The next whole frame, without taking it. */
-  peek(): TtyFrame | undefined;
-  /** Take the next whole frame. */
-  next(): TtyFrame | undefined;
-  /** Take every byte held, frames not taken yet included, as they arrived (for a switch to raw bytes). */
-  rest(): Uint8Array;
-}
-/**
- * Run `file` with `args` on a new pty in the guest (no file: root's login
- * shell; a file without "/" is looked up in PATH): connect to the guest's
- * kwtty server (retrying while it is not up yet), send OPEN, and wait for
- * OPENED. Rejects with a PtyError (ETIMEDOUT, EREMOTE with the guest's
- * message, e.g. a failed exec or chdir, EPROTO, ABORTED, ECONNRESET,
- * ECONNABORTED), or a RangeError for bad options.
- */
-export declare function spawnPty(vsock: Vsock, file?: string, args?: readonly string[], opts?: PtyOptions): Promise<Pty>;
-/**
- * Run `file` with `args` in the guest on pipes (stdin, stdout and stderr;
- * no file: root's login shell, reading stdin), as spawnPty() otherwise. A
- * guest without PIPES (a kernel from before them) refuses it: EREMOTE.
- */
-export declare function spawnSubprocess(vsock: Vsock, file?: string, args?: readonly string[], opts?: SpawnOptions): Promise<Subprocess>;
-/**
- * Run `file` with `args` on pipes, feed it `input`, and resolve with what
- * it printed on stdout and stderr and how it ended, once it ended. A
- * non-zero exit or a signal resolves too. Rejects with a PtyError as
- * spawnSubprocess(), or ENOBUFS (output over `maxBuffer`), ABORTED (the
- * signal; the program gets SIGKILL), ECONNRESET (the session was lost:
- * the kernel exited).
- */
-export declare function execSubprocess(vsock: Vsock, file: string, args?: readonly string[], opts?: ExecOptions & {
-  encoding?: "utf8";
-}): Promise<ExecResult<string>>;
-export declare function execSubprocess(vsock: Vsock, file: string, args: readonly string[] | undefined, opts: ExecOptions & {
-  encoding: "buffer";
-}): Promise<ExecResult<Uint8Array>>;
-export declare function execSubprocess(vsock: Vsock, file: string, args?: readonly string[], opts?: ExecOptions): Promise<ExecResult<string | Uint8Array>>;
-/** What connectGuest() takes. */
-export interface ConnectOptions {
-  /** How long to wait, in ms: for the guest server (connect retries), its TCP connect and the handshake together. Default 30000. */
-  timeout?: number;
-  /** Aborts connecting (PtyError ABORTED). It has no effect once connected: cancel `readable` or call close(). */
-  signal?: AbortSignal;
-  /** The guest server's (kwtty's) vsock port. Default TTY_PORT (1022). */
-  ttyPort?: number;
-}
-/**
- * A raw byte stream to a TCP server in the guest (connectGuest()). It has
- * the shape of a ByteDuplex (http.ts), so fetchOver() can use it.
- */
-export interface GuestSocket extends AsyncDisposable {
-  /** The guest's TCP port. */
-  readonly port: number;
-  /**
-   * What the server sends. A pull stream: vsock credit follows what is
-   * read. It ends when the server shuts down its sending side (or
-   * closes), and errors with a VsockError on a reset. Cancelling it tells
-   * the guest the host no longer reads, which ends the connection.
-   */
-  readonly readable: ReadableStream<Uint8Array>;
-  /**
-   * Bytes for the server; a write resolves once its bytes are sent.
-   * close() is a half-close: the server reads EOF and may still send.
-   * abort() resets the connection.
-   */
-  readonly writable: WritableStream<Uint8Array>;
-  /** Close both ways (what was written is still sent; what was not read is dropped). Resolves once the connection is gone. */
-  close(): Promise<void>;
-  /** Settles once the connection is gone: "closed" (both sides shut down) or "reset". */
-  readonly closed: Promise<"closed" | "reset">;
-  /** `await using`: close(). */
-  [Symbol.asyncDispose](): Promise<void>;
-}
-/**
- * Connect to TCP `port` on the guest's 127.0.0.1 through the guest's kwtty
- * server (CONNECT; retrying while kwtty is not up yet). The guest connects
- * before it answers, so the promise resolves with a connected GuestSocket,
- * or rejects with a PtyError: ECONNREFUSED (nothing listens on the port),
- * EREMOTE (another connect error, with the guest's message, or a guest
- * without CONNECT), ETIMEDOUT, ABORTED, ECONNRESET, ECONNABORTED, EPROTO;
- * a RangeError for a port outside 1 to 65535.
- */
-export declare function connectGuest(vsock: Vsock, port: number, opts?: ConnectOptions): Promise<GuestSocket>;
+/** createKernel's `commands`: names to handlers. */
+export type CommandsOption = Record<string, HostCommand>;
+/** @internal createKernel's `commands`, checked before boot. */
+declare function parseCommands(commands: CommandsOption | undefined, vsock: boolean): Array<[string, HostCommand]>;
 /** A kernel: a compiled module, its bytes, a Response, or a URL to fetch (a file path or file: URL on Node). */
 export type KernelSource = WebAssembly.Module | BytesSource;
 /** Bytes, a Response, or a URL to fetch (a file path or file: URL on Node). */
@@ -2936,6 +3089,10 @@ export interface HttpDiskSpec extends SpecCommon {
   chunkSize?: number;
   /** Browsers: keep the overlay in IndexedDB under this name (openHttpDisk's `name`); else it is in memory. */
   persist?: string;
+  /** No overlay: the guest's writes fail (EROFS), and every range must come from the image first seen (HttpBase strict). `persist` is ignored. */
+  readOnly?: boolean;
+  /** Bytes to fetch ahead at open, in one streaming request (HttpBaseOptions.prefetch); default: what the image's distro header says; false: none. */
+  prefetch?: number | false;
 }
 /** The persistent data disk (browsers: IndexedDB; see js/web/disk.ts openDataDisk()). */
 export interface DataDiskSpec extends SpecCommon {
@@ -3008,6 +3165,91 @@ export interface DiskState {
   cow?: CowDiskStats;
 }
 /**
+ * distros.json: the index of the distro images that go with a base bundle
+ * (unkernel.wasm), next to them in a release and in a build's
+ * vendor/build/distro/ (guest/tools/distros-json.mjs writes it).
+ */
+export interface DistroIndex {
+  /** KW_ABI_VERSION of the bundle's kwemu (null if unknown). */
+  abi: number | null;
+  /** The base id of the bundle's initramfs (`base-<hash>`, /kw/layer/usr/lib/kw-base; null if unknown). */
+  base: string | null;
+  /** Alpine first, then by name. */
+  distros: DistroIndexEntry[];
+}
+/** One image in distros.json. */
+export interface DistroIndexEntry {
+  /** The distro's name (`[a-z0-9]+`), what /usr/lib/kw-distro says. */
+  name: string;
+  /** The image's file name, next to distros.json (`<name>.erofs`). */
+  file: string;
+  /** Its size in bytes. */
+  size: number;
+  /** Its SHA-256, hex. */
+  sha256: string;
+  /** The image id, /usr/lib/kw-image (`<name>-<version>-<hash>`). */
+  image: string;
+}
+/** A distro image: a path or URL (Node: a file path, a file: URL or an http(s) URL; browsers: a URL, relative to the page), a disk spec, or a BlockDevice. */
+export type DistroSource = string | URL | DiskSpec | BlockDevice;
+/** What the host read off the distro image (structured-cloneable). */
+export interface DistroInfo {
+  /** Its path or URL (for messages). */
+  name: string;
+  /** The file system, from its superblock. */
+  fs: "erofs" | "ext4";
+  /** The volume label (the base looks for "kwroot"). */
+  label: string;
+  /** The file system UUID, hex. */
+  uuid: string;
+  /** Size in bytes. */
+  size: number;
+  /** The content identity a snapshot records (see DistroDisk). */
+  identity: string;
+  /** From its distro header (see the file comment), if it has one: the distro's name, the image id and the prefetch size. */
+  distro?: string;
+  image?: string;
+  prefetch?: number;
+}
+/** The file system in the first bytes of an image, or null. */
+export declare function probeDistro(head: Uint8Array): {
+  fs: DistroInfo["fs"];
+  label: string;
+  uuid: string;
+} | null;
+/**
+ * The distro image as a disk: read-only whatever the underlying disk
+ * allows, with a content identity for snapshots (see the file comment).
+ * open() reads its first 64 KiB and rejects an image that is neither erofs
+ * nor ext4.
+ */
+export declare class DistroDisk implements BlockDevice {
+  readonly inner: BlockDevice;
+  readonly info: DistroInfo;
+  readonly size: number;
+  readonly readOnly = true;
+  readonly flags = 1;
+  readonly blockSize?: number;
+  /** @internal Use DistroDisk.open(). */
+  constructor(inner: BlockDevice, info: DistroInfo);
+  /** Wrap `inner` (a DistroDisk is returned as it is). `name` is for messages (default: what its snapshot state says). */
+  static open(inner: BlockDevice, { name, log }?: {
+    name?: string;
+    log?: (msg: string) => void;
+  }): Promise<DistroDisk>;
+  /** What an image over HTTP fetched (requests, bytes, the prefetch: HttpBaseStats); undefined for a file. */
+  get stats(): HttpBaseStats | undefined;
+  read(off: number, views: Uint8Array[]): MaybePromise<void>;
+  write(): never;
+  snapshotState(): DiskSnapshotState;
+  snapshotSeal(): {
+    state: DiskSnapshotState;
+    done: Promise<void>;
+  };
+  /** Close the underlying disk (a FileDisk's descriptor), if it can be. */
+  close(): void;
+}
+/**
  * A kernel or initrd source that crosses a thread: an absolute URL (the
  * worker fetches it, or reads it from disk on Node: file: URLs), bytes
  * (transferred), or, for the kernel, a WebAssembly.Module (it survives
@@ -3032,6 +3274,8 @@ interface WorkerBootSpec {
   };
   /** Disk and network specs (devices.ts), built by the worker's registry. */
   disks?: DiskSpec[];
+  /** The distro image as a read-only disk spec (CreateKernelOptions.distro), the first disk. */
+  distro?: DiskSpec;
   net?: NetSpec;
   /** Milliseconds between stats snapshots while running. */
   statsIntervalMs: number;
@@ -3189,6 +3433,7 @@ type FromWorker =
   stats: InstanceStats;
   disks: DiskState[];
   skipped: SkippedDisk[];
+  distro?: DistroInfo;
 } | {
   t: "boot-error";
   stage: string;
@@ -3379,6 +3624,8 @@ export declare class WorkerKernel implements KernelHandle {
   #private;
   /** The command line it booted with. */
   cmdline: string;
+  /** The distro image (the `distro` option) as the worker read it, or undefined. */
+  distro: DistroInfo | undefined;
   /** Memory actually allocated, in MiB. */
   memoryMiB: number;
   memory64: boolean;
@@ -3465,6 +3712,16 @@ export declare class WorkerKernel implements KernelHandle {
   get mounts(): ReadonlyMap<string, Mount>;
   /** @internal createKernel's `mounts`, once the kernel runs. */
   startMounts(list: ReturnType<typeof parseMounts>): void;
+  /** Host commands, as inline (commands.ts): the handlers run on this thread. */
+  addCommand(name: string, handler: HostCommand, opts?: {
+    timeout?: number;
+  }): Promise<void>;
+  removeCommand(name: string, opts?: {
+    timeout?: number;
+  }): Promise<void>;
+  get commands(): ReadonlyMap<string, HostCommand>;
+  /** @internal createKernel's `commands`, once the kernel runs. */
+  startCommands(list: ReturnType<typeof parseCommands>): void;
   /**
    * With the shm option: open(), create() and openId() as inline. Each call
    * is a round trip to the worker, which runs it when the kernel next
@@ -3577,8 +3834,9 @@ export interface CreateKernelOptions {
   restore?: KernelSnapshot;
   /**
    * The kernel: a URL (a path or file: URL on Node), bytes, a Response or
-   * a compiled WebAssembly.Module. Default: the bundled Alpine kernel
-   * (unkernel-alpine.wasm next to the entry).
+   * a compiled WebAssembly.Module. Default: the bundled kernel
+   * (unkernel.wasm next to the entry: the kernel and the base initramfs,
+   * which boots `distro`, or without one the base shell).
    */
   kernel?: KernelSource;
   /**
@@ -3606,6 +3864,25 @@ export interface CreateKernelOptions {
    * and closes at exit. Worker mode takes specs only.
    */
   disks?: Array<BlockDevice | DiskSpec>;
+  /**
+   * A distro image for the base initramfs of the bundled kernel
+   * (unkernel.wasm, which mounts the disk labelled kwroot read-only under
+   * the root overlay and runs its /sbin/init; without one it starts a
+   * base shell: busybox, the kw tools, kwtty): an erofs or ext4 image, attached read-only as the first
+   * disk (/dev/wda), before `disks` (whose indices, as in DiskState,
+   * onDiskError and WorkerKernel.detachDisk(), stay those of `disks`). A
+   * path or file: URL (Node), an http(s) URL served with Range support,
+   * read lazily and never cached across sessions (browsers: relative to
+   * the page), a disk spec (made read-only: { kind: "file", path } on
+   * Node, { kind: "http", url }), or a BlockDevice (inline only; wrapped
+   * read-only). The guest never writes it. In a snapshot it is the first
+   * disk, identified by its content (DistroDisk). Needs an initramfs: the
+   * bundled one by default, or `initrd`, unless `cmdline` is given. On
+   * Node, fetchDistro("alpine") gives the path of a named one (from the
+   * release of the package's version, downloaded once); in browsers, pass
+   * the URL of an image you host.
+   */
+  distro?: DistroSource;
   /**
    * Network: a NetBackend (wrapped in a NetStack), a NetStack, any
    * NetDevice, or a spec ({ kind: "net", backend: { kind: "direct" } } on
@@ -3681,6 +3958,18 @@ export interface CreateKernelOptions {
    * reject with its MountError (it is logged too). Needs vsock (the default).
    */
   mounts?: MountsOption;
+  /**
+   * Host commands (commands.ts): names to functions of the host that the
+   * guest runs as programs. Each gets a link /run/kw/bin/NAME to the
+   * guest's kwcmd (first on PATH), made through kwtty once it answers; a
+   * guest process that runs NAME is a normal process, and the function is
+   * called with its arguments, environment, stdin, stdout and stderr, and
+   * what it returns ends that process. spawn() and exec() wait for the
+   * links; if making them failed, the calls that waited reject with the
+   * CommandError (it is logged too). Needs vsock (the default). With
+   * `restore`, the snapshot's links are replaced by these.
+   */
+  commands?: CommandsOption;
   /** Initial console size (cols x rows); resize() changes it later. */
   consoleSize?: {
     cols: number;
@@ -3790,6 +4079,8 @@ export interface InstanceStats extends KernelStats {
 export interface KernelHandle {
   /** The command line it booted with. */
   readonly cmdline: string;
+  /** The distro image (the `distro` option) as the host read it, or undefined. */
+  readonly distro: DistroInfo | undefined;
   /** Settles when the kernel exits: halt (power off 0, halt 1, restart 2), panic 253, trap 254, fatal 255, or stop(). */
   readonly exited: Promise<ExitResult>;
   /** Console output as a stream: the first access gets everything since boot (the last 1 MiB); closes at exit. */
@@ -3847,8 +4138,9 @@ export interface KernelHandle {
    * (the zigpty / node-pty shape), or with `pty: false` on stdin, stdout
    * and stderr pipes, a Subprocess. Rejects with a PtyError ENODEV when
    * the instance was created with `vsock: false`. Waits until
-   * createKernel's `mounts` are mounted, as exec() does, and rejects with
-   * the MountError if one of them failed.
+   * createKernel's `mounts` are mounted and its `commands` linked, as
+   * exec() does, and rejects with the MountError or CommandError if one
+   * of them failed.
    */
   spawn(file: string | undefined, args: readonly string[] | undefined, opts: PipeOptions): Promise<Subprocess>;
   spawn(file?: string, args?: readonly string[], opts?: PtyOptions): Promise<Pty>;
@@ -3887,6 +4179,22 @@ export interface KernelHandle {
   /** The mounts the guest has now, by guest path. */
   readonly mounts: ReadonlyMap<string, Mount>;
   /**
+   * Add a host command (commands.ts): from now on a guest process that
+   * runs `name` calls `handler` here. Resolves once the guest has the link
+   * /run/kw/bin/NAME (at once when `name` is replaced); rejects with a
+   * CommandError (EINVAL for a bad name, ENODEV without vsock, ENOENT
+   * without kwcmd in the image, ETIMEDOUT, ...).
+   */
+  addCommand(name: string, handler: HostCommand, opts?: {
+    timeout?: number;
+  }): Promise<void>;
+  /** Remove a host command and its link in the guest. A guest process running it goes on. */
+  removeCommand(name: string, opts?: {
+    timeout?: number;
+  }): Promise<void>;
+  /** The host commands the guest has now, by name. */
+  readonly commands: ReadonlyMap<string, HostCommand>;
+  /**
    * With the shm option: guest shmem files read and written in place
    * (open(), create(), openId(); ShmFile.read()/write()). In worker mode the
    * copies run in the worker, where the kernel's memory is.
@@ -3908,6 +4216,8 @@ export declare class KernelInstance implements KernelHandle {
   readonly cmdline: string;
   /** The network device, if any. */
   readonly net: NetDevice | undefined;
+  /** The distro image (the `distro` option) as the host read it, or undefined. */
+  distro: DistroInfo | undefined;
   /** Disks whose spec was optional and could not be built, and why. */
   skippedDisks: SkippedDisk[];
   /** Settles when the kernel exits: halt (power off 0, halt 1, restart 2), panic 253, trap 254, fatal 255, or stop(). */
@@ -3924,6 +4234,8 @@ export declare class KernelInstance implements KernelHandle {
   restoreMounts(snap: KernelSnapshot, list: ReturnType<typeof parseMounts>): Promise<ReturnType<typeof parseMounts>>;
   /** @internal createKernel's `mounts`, once the kernel runs. */
   startMounts(list: ReturnType<typeof parseMounts>): void;
+  /** @internal createKernel's `commands`, once the kernel runs. */
+  startCommands(list: ReturnType<typeof parseCommands>): void;
   /**
    * With the vsock option: listen() for guest connections to the host
    * (CID 2, any port) and connect() to guest listeners (CID 3), each a
@@ -3949,6 +4261,14 @@ export declare class KernelInstance implements KernelHandle {
   /** Mount a host file system in the guest (mounts.ts; see KernelHandle.mount()). */
   mount(path: string, fs: FsSource, opts?: MountOptions): Promise<Mount>;
   get mounts(): ReadonlyMap<string, Mount>;
+  /** Add a host command (commands.ts; see KernelHandle.addCommand()). */
+  addCommand(name: string, handler: HostCommand, opts?: {
+    timeout?: number;
+  }): Promise<void>;
+  removeCommand(name: string, opts?: {
+    timeout?: number;
+  }): Promise<void>;
+  get commands(): ReadonlyMap<string, HostCommand>;
   /**
    * With the shm option: open guest shmem files by name or by a guest
    * export's id and read and write their pages in place (shm.ts). Handles
@@ -4146,4 +4466,54 @@ export declare const HTTP_MAX_HEADER_BYTES: number;
  * Redirects are returned, not followed. Rejects 101 Switching Protocols.
  */
 export declare function fetchOver(connect: GuestConnect, input: string | URL | Request, init?: RequestInit): Promise<Response>;
+/** The host port kwwasi connects to (guest/src/kwwasi.c KWWASI_PORT). */
+export declare const WASI_EXEC_PORT = 1021;
+export interface WasiExecOptions {
+  /** The vsock port to listen on (default WASI_EXEC_PORT, 1021). */
+  port?: number;
+  /** The largest module accepted (default 256 MiB). */
+  maxModuleBytes?: number;
+  log?: (msg: string) => void;
+  /** Workers kept for the next program once theirs ended by itself (default 2). */
+  idleWorkers?: number;
+  /**
+   * Compiled modules kept, least recently used dropped first: at most
+   * `count` (default 16) and `bytes` of module files (default 512 MiB; the
+   * newest is kept even when larger).
+   */
+  moduleCache?: {
+    count?: number;
+    bytes?: number;
+  };
+  /**
+   * Requests through a SharedArrayBuffer per program instead of messages
+   * (default: when this thread can use one, wasiSharedChannelAvailable()).
+   * false: messages and JSPI.
+   */
+  sharedMemory?: boolean;
+}
+export interface WasiExecStats {
+  /** Programs started, running now, and ended by a trap or an error. */
+  started: number;
+  running: number;
+  failed: number;
+  /** Requests made to kwwasi. */
+  requests: number;
+  /** Modules kwwasi sent (it sends none the host has), and compiled modules kept. */
+  received: number;
+  cached: number;
+  /** Worker threads alive (running a program or idle), and the idle ones. */
+  workers: number;
+  idle: number;
+  /** Shared channels still served (sharedMemory; 0 once no program runs). */
+  channels: number;
+}
+export interface WasiExecServer {
+  readonly port: number;
+  /** Requests go through a SharedArrayBuffer (WasiExecOptions.sharedMemory), not messages. */
+  readonly shared: boolean;
+  readonly stats: WasiExecStats;
+  /** Stop listening and end the idle workers (running programs go on). */
+  close(): void;
+}
 export {};

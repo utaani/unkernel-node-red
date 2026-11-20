@@ -725,7 +725,7 @@ const OP_CLOSE = 5;
 const REFRESH_FORCE = 1;
 const FLAG_WRITABLE = 1;
 const FLAG_GUEST = 2;
-const DEFAULT_TIMEOUT_MS$2 = 1e4;
+const DEFAULT_TIMEOUT_MS$3 = 1e4;
 const ERRNO_NAMES = {
 	1: "EPERM",
 	2: "ENOENT",
@@ -913,7 +913,7 @@ var ShmDevice = class {
 		dv.setBigUint64(16, BigInt(f.size ?? 0), true);
 		this.stats.requests++;
 		return new Promise((resolve, reject) => {
-			const timeout = f.timeout ?? DEFAULT_TIMEOUT_MS$2;
+			const timeout = f.timeout ?? DEFAULT_TIMEOUT_MS$3;
 			const timer = timeout > 0 && Number.isFinite(timeout) ? setTimeout(() => {
 				this.#pending.delete(tag);
 				const i = this.#queue.indexOf(req);
@@ -1265,7 +1265,7 @@ const TTY_SIGNALS = [
 const DEFAULT_TERM = "xterm-256color";
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
-const DEFAULT_TIMEOUT_MS$1 = 3e4;
+const DEFAULT_TIMEOUT_MS$2 = 3e4;
 const DEFAULT_MAX_BUFFER = 64 << 20;
 const RETRY_MS$2 = 100;
 const OPENED_SIZE = 14;
@@ -1745,7 +1745,7 @@ async function readOpened(reader, parser) {
 async function openSession(vsock, payload, opts) {
 	const open = encodeTtyFrame(1, payload);
 	const port = opts.port ?? 1022;
-	const timeout = opts.timeout ?? DEFAULT_TIMEOUT_MS$1;
+	const timeout = opts.timeout ?? DEFAULT_TIMEOUT_MS$2;
 	const signal = opts.signal;
 	const deadline = performance.now() + timeout;
 	const timedOut = () => new PtyError("ETIMEDOUT", `kwtty: no terminal server on vsock port ${port} within ${timeout} ms (is /usr/bin/kwtty running in the guest?)`);
@@ -3878,8 +3878,8 @@ function snapshotMountMismatch(saved, given) {
 	}
 	return null;
 }
-const BOOT_TIMEOUT_MS = 12e4;
-const DEFAULT_TIMEOUT_MS = 3e4;
+const BOOT_TIMEOUT_MS$1 = 12e4;
+const DEFAULT_TIMEOUT_MS$1 = 3e4;
 const SPEC_KEYS = /* @__PURE__ */ new Set([
 	"fs",
 	"readOnly",
@@ -4041,7 +4041,7 @@ var MountTable = class {
 	mountAll(list) {
 		if (!list.length) return;
 		const boot = Promise.allSettled(list.map((m) => this.mount(m.path, m.fs, {
-			timeout: BOOT_TIMEOUT_MS,
+			timeout: BOOT_TIMEOUT_MS$1,
 			...m.opts
 		}))).then((rs) => {
 			if (this.#boot === boot) this.#boot = void 0;
@@ -4075,7 +4075,7 @@ var MountTable = class {
 			h.gone();
 			throw e;
 		};
-		const timeout = opts.timeout ?? DEFAULT_TIMEOUT_MS;
+		const timeout = opts.timeout ?? DEFAULT_TIMEOUT_MS$1;
 		let r;
 		try {
 			r = await guestRun(vsock, "kw9p", [
@@ -4114,7 +4114,7 @@ var MountTable = class {
 		h.state = "unmounting";
 		let r;
 		try {
-			r = await guestRun(vsock, "umount", [h.path], opts.timeout ?? DEFAULT_TIMEOUT_MS);
+			r = await guestRun(vsock, "umount", [h.path], opts.timeout ?? DEFAULT_TIMEOUT_MS$1);
 		} catch (e) {
 			if (this.#down || e.code === "ECONNABORTED") return h.gone();
 			h.state = "mounted";
@@ -4135,6 +4135,270 @@ var MountTable = class {
 		for (const h of [...this.#mounts.values()]) h.state = "gone";
 		this.#mounts.clear();
 		this.#server?.close();
+	}
+};
+const CMD_PORT = 1020;
+const CMD_START = 1;
+const CMD_DATA = 2;
+const CMD_EXIT = 4;
+const CMD_ERROR = 5;
+const CMD_EOF = 7;
+const CMD_STDERR = 8;
+const CMD_STDIN = 9;
+const CMD_ARG = 10;
+const CMD_ENV = 11;
+const START_SIZE = 20;
+const MAX_WRITE = 16384;
+const BOOT_TIMEOUT_MS = 12e4;
+const DEFAULT_TIMEOUT_MS = 3e4;
+var CommandError = class extends Error {
+	code;
+	constructor(code, message, cause) {
+		super(message, cause === void 0 ? void 0 : { cause });
+		this.name = "CommandError";
+		this.code = code;
+	}
+};
+function checkCommandName(name) {
+	if (typeof name !== "string" || !/^[A-Za-z0-9_+][A-Za-z0-9._+-]{0,63}$/.test(name) || name === "kwcmd") throw new CommandError("EINVAL", `command name ${JSON.stringify(name)}: 1 to 64 letters, digits, ".", "_", "+" or "-", not starting with "." or "-"`);
+	return name;
+}
+function parseCommands(commands, vsock) {
+	const list = Object.entries(commands ?? {});
+	for (const [name, fn] of list) {
+		checkCommandName(name);
+		if (typeof fn !== "function") throw new CommandError("EINVAL", `command ${name}: the handler is not a function`);
+	}
+	if (list.length && !vsock) throw new CommandError("ENODEV", "createKernel({ commands }) needs the vsock device (kwcmd and kwtty run over it); it was turned off (vsock: false)");
+	return list;
+}
+const tick = () => new Promise((r) => setTimeout(r, 0));
+async function serve(conn, commands, log) {
+	const reader = conn.readable.getReader();
+	const writer = conn.writable.getWriter();
+	const parser = new TtyFrameParser();
+	const dec = new TextDecoder();
+	const enc = new TextEncoder();
+	let gone = false;
+	let tail = Promise.resolve();
+	const send = (frame) => {
+		const p = tail.then(() => writer.write(frame));
+		tail = p.catch(() => {});
+		return p;
+	};
+	const next = async () => {
+		for (;;) {
+			const f = parser.next();
+			if (f) return f;
+			let r;
+			try {
+				r = await reader.read();
+			} catch {
+				return;
+			}
+			if (r.done) return void 0;
+			parser.push(r.value);
+		}
+	};
+	const argv = [];
+	const env = {};
+	let start;
+	for (let f = await next(); f; f = await next()) if (f.type === CMD_ARG) argv.push(dec.decode(f.payload));
+	else if (f.type === CMD_ENV) {
+		const kv = dec.decode(f.payload);
+		const eq = kv.indexOf("=");
+		if (eq > 0) env[kv.slice(0, eq)] = kv.slice(eq + 1);
+	} else if (f.type === CMD_START) {
+		start = f.payload;
+		break;
+	} else if (f.flags & 1) break;
+	const refuse = async (msg) => {
+		await send(encodeTtyFrame(CMD_ERROR, enc.encode(msg))).catch(() => {});
+		conn.close();
+	};
+	if (!start || start.length < START_SIZE || !argv.length) {
+		conn.reset();
+		return;
+	}
+	const dv = new DataView(start.buffer, start.byteOffset, start.length);
+	if (dv.getUint16(0, true) < 1) return refuse("kwcmd speaks no protocol version of this host");
+	const name = argv[0];
+	const handler = commands.get(name);
+	if (!handler) return refuse("the host does not provide this command");
+	const ttys = dv.getUint16(2, true);
+	const ac = new AbortController();
+	conn.closed.then(() => {
+		gone = true;
+		ac.abort(/* @__PURE__ */ new Error(`${name}: the guest process is gone`));
+	});
+	let ended = false;
+	const stdin = new ReadableStream({ pull: async (c) => {
+		if (!ended) send(encodeTtyFrame(CMD_STDIN)).catch(() => {});
+		while (!ended) {
+			const f = await next();
+			if (!f || f.type === CMD_EOF) ended = true;
+			else if (f.type === CMD_DATA && f.payload.length) {
+				c.enqueue(f.payload);
+				return;
+			}
+		}
+		c.close();
+	} }, { highWaterMark: 0 });
+	const output = (type) => new WritableStream({ write: (chunk) => {
+		const bytes = typeof chunk === "string" ? enc.encode(chunk) : chunk;
+		if (gone) throw new Error(`${name}: the guest process is gone`);
+		let last = Promise.resolve();
+		for (let i = 0; i < bytes.length; i += MAX_WRITE) last = send(encodeTtyFrame(type, bytes.subarray(i, i + MAX_WRITE)));
+		return last;
+	} });
+	const stdout = output(CMD_DATA), stderr = output(CMD_STDERR);
+	const ctx = {
+		name,
+		args: argv.slice(1),
+		env,
+		cwd: dec.decode(start.subarray(START_SIZE)) || "/",
+		pid: dv.getUint32(8, true),
+		uid: dv.getUint32(12, true),
+		gid: dv.getUint32(16, true),
+		isTTY: {
+			stdin: !!(ttys & 1),
+			stdout: !!(ttys & 2),
+			stderr: !!(ttys & 4)
+		},
+		rows: dv.getUint16(4, true),
+		cols: dv.getUint16(6, true),
+		stdin,
+		stdout,
+		stderr,
+		signal: ac.signal
+	};
+	const direct = (type, data) => {
+		const bytes = typeof data === "string" ? enc.encode(data) : data;
+		for (let i = 0; i < bytes.length; i += MAX_WRITE) send(encodeTtyFrame(type, bytes.subarray(i, i + MAX_WRITE))).catch(() => {});
+	};
+	let code = 0, signal = "";
+	try {
+		const r = await handler(ctx);
+		if (typeof r === "number") code = r & 255;
+		else if (r && typeof r === "object" && !(r instanceof Uint8Array)) {
+			if (r.signal !== void 0) {
+				const sig = String(r.signal).replace(/^SIG/, "");
+				if (!TTY_SIGNALS.includes(sig)) throw new RangeError(`unknown signal ${JSON.stringify(r.signal)}`);
+				signal = sig;
+			} else code = (r.exitCode ?? 0) & 255;
+		} else if (typeof r === "string" || r instanceof Uint8Array) {
+			await drain();
+			direct(CMD_DATA, r);
+		}
+	} catch (e) {
+		code = 1;
+		if (!gone) {
+			await drain();
+			direct(CMD_STDERR, `${name}: ${e?.message ?? e}\n`);
+			log(`[host] command ${name} failed: ${e?.stack ?? e}`);
+		}
+	}
+	await drain();
+	await send(encodeTtyFrame(CMD_EXIT, signal ? Uint8Array.of(1, 0, ...enc.encode(signal)) : Uint8Array.of(0, code))).catch(() => {});
+	conn.close();
+	async function drain() {
+		for (;;) {
+			const t = tail;
+			await t;
+			await tick();
+			if (t === tail || gone) return;
+		}
+	}
+}
+var CommandTable = class {
+	#vsock;
+	#log;
+	#commands = /* @__PURE__ */ new Map();
+	#listener;
+	#syncing = Promise.resolve();
+	#boot;
+	#down = false;
+	constructor(vsock, log) {
+		this.#vsock = vsock;
+		this.#log = log;
+	}
+	get commands() {
+		return this.#commands;
+	}
+	gate(fn) {
+		return this.#boot ? this.#boot.then(fn) : fn();
+	}
+	addAll(list) {
+		if (!list.length) return;
+		const boot = (async () => {
+			this.#listen();
+			for (const [name, fn] of list) this.#commands.set(name, fn);
+			await this.#sync(BOOT_TIMEOUT_MS);
+		})().finally(() => {
+			if (this.#boot === boot) this.#boot = void 0;
+		});
+		boot.catch((e) => this.#log(`[host] ${e?.message ?? e}`));
+		this.#boot = boot;
+	}
+	async add(name, handler, opts = {}) {
+		checkCommandName(name);
+		if (typeof handler !== "function") throw new CommandError("EINVAL", `command ${name}: the handler is not a function`);
+		this.#listen();
+		const had = this.#commands.get(name);
+		this.#commands.set(name, handler);
+		if (had) return;
+		try {
+			await this.#sync(opts.timeout ?? DEFAULT_TIMEOUT_MS);
+		} catch (e) {
+			if (this.#commands.get(name) === handler) this.#commands.delete(name);
+			throw e;
+		}
+	}
+	async remove(name, opts = {}) {
+		if (!this.#commands.delete(name) || this.#down) return;
+		await this.#sync(opts.timeout ?? DEFAULT_TIMEOUT_MS);
+	}
+	#listen() {
+		const vsock = this.#vsock;
+		if (!vsock) throw new CommandError("ENODEV", "host commands need the vsock device, which this instance has not: it was created with vsock: false");
+		if (this.#down) throw new CommandError("ECONNABORTED", "the kernel exited");
+		if (this.#listener) return;
+		try {
+			this.#listener = vsock.listen(CMD_PORT, (conn) => {
+				serve(conn, this.#commands, this.#log).catch((e) => {
+					this.#log(`[host] host command: ${e?.stack ?? e}`);
+					conn.reset();
+				});
+			});
+		} catch (e) {
+			throw new CommandError("EADDRINUSE", `cannot serve host commands on vsock port ${CMD_PORT}: ${e?.message ?? e}`, e);
+		}
+	}
+	#sync(timeout) {
+		const run = this.#syncing.then(async () => {
+			const vsock = this.#vsock;
+			if (this.#down) throw new CommandError("ECONNABORTED", "the kernel exited");
+			let r;
+			try {
+				r = await guestRun(vsock, "kwcmd", ["sync", ...this.#commands.keys()], timeout);
+			} catch (e) {
+				const code = e instanceof PtyError ? e.code : "";
+				const msg = e?.message ?? String(e);
+				if (this.#down || code === "ECONNABORTED" || code === "ECONNRESET") throw new CommandError("ECONNABORTED", "host commands: the kernel exited", e);
+				if (code === "ETIMEDOUT") throw new CommandError("ETIMEDOUT", `host commands: ${/killed/.test(msg) ? msg : `no answer from the guest's kwtty within ${timeout} ms (an image without kwtty, or still booting?)`}`, e);
+				if (code === "EREMOTE" && /exec kwcmd: No such file/.test(msg)) throw new CommandError("ENOENT", "host commands: the guest has no /usr/bin/kwcmd (an image from before host commands)", e);
+				throw new CommandError("EREMOTE", `host commands: ${msg}`, e);
+			}
+			if (r.exitCode !== 0) throw new CommandError("EREMOTE", `host commands: ${((r.stderr || r.stdout).trim().split("\n").pop() ?? "").replace(/^kwcmd: /, "").replace(/\s*\(errno \d+\)\s*$/, "") || `kwcmd sync exited with ${r.exitCode ?? `signal ${r.signal}`}`}`);
+		});
+		this.#syncing = run.catch(() => {});
+		return run;
+	}
+	shutdown() {
+		if (this.#down) return;
+		this.#down = true;
+		this.#listener?.close();
+		this.#commands.clear();
 	}
 };
 const KWSPARSE_MAGIC = "KWSPARS1";
@@ -4856,6 +5120,26 @@ var CowDisk = class CowDisk {
 		};
 	}
 };
+const HEADER_MAGIC = "KWDISTRO";
+const totalOf = (r) => {
+	const m = /\/(\d+)\s*$/.exec(r.headers.get("content-range") ?? "");
+	return m ? Number(m[1]) : void 0;
+};
+function readDistroHeader(head, size) {
+	if (head.length < 128) return null;
+	for (let i = 0; i < 8; i++) if (head[i] !== HEADER_MAGIC.charCodeAt(i)) return null;
+	const dv = new DataView(head.buffer, head.byteOffset, 128);
+	if (dv.getUint32(8, true) !== 1 || dv.getUint32(12, true) < 128) return null;
+	const n = Number(dv.getBigUint64(16, true)), prefetch = Number(dv.getBigUint64(24, true));
+	if (size !== void 0 && n !== size) return null;
+	const str = (b) => new TextDecoder().decode(b.subarray(0, b.indexOf(0) < 0 ? b.length : b.indexOf(0)));
+	return {
+		size: n,
+		prefetch: Math.min(prefetch, n),
+		distro: str(head.subarray(32, 64)),
+		image: str(head.subarray(64, 128))
+	};
+}
 var HttpBase = class HttpBase {
 	url = "";
 	size = 0;
@@ -4866,24 +5150,51 @@ var HttpBase = class HttpBase {
 	pending = /* @__PURE__ */ new Map();
 	stats = {
 		requests: 0,
-		bytes: 0
+		bytes: 0,
+		lazyRequests: 0,
+		prefetch: 0,
+		prefetchBytes: 0,
+		prefetchState: "none"
 	};
-	static async open(url, { chunkSize = 262144, maxRequest = 4194304 } = {}) {
+	validator = null;
+	header = null;
+	log = (m) => console.warn(m);
+	static async open(url, { chunkSize = 262144, maxRequest = 4194304, strict = false, prefetch, log } = {}) {
 		const r = await fetch(url, {
-			headers: { range: "bytes=0-0" },
-			cache: "no-store"
+			headers: { range: `bytes=0-${chunkSize - 1}` },
+			cache: "no-cache"
 		});
 		if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
 		const cr = r.headers.get("content-range");
-		await r.arrayBuffer();
 		const m = cr && /\/(\d+)\s*$/.exec(cr);
-		if (r.status !== 206 || !m) throw new Error(`${url}: server does not support Range requests`);
+		if (r.status !== 206 || !m) {
+			r.body?.cancel().catch(() => {});
+			throw new Error(`${url}: server does not support Range requests`);
+		}
+		const head = new Uint8Array(await r.arrayBuffer());
 		const b = new HttpBase();
 		b.url = url;
 		b.size = Number(m[1]);
-		b.identity = `${url} ${b.size} ${r.headers.get("etag") ?? r.headers.get("last-modified") ?? ""}`;
+		if (log) b.log = log;
+		const validator = r.headers.get("etag") ?? r.headers.get("last-modified") ?? "";
+		b.identity = `${url} ${b.size} ${validator}`;
+		if (strict) b.validator = validator;
+		b.#seen = validator;
 		b.chunkSize = chunkSize;
 		b.maxChunks = Math.max(1, Math.floor(maxRequest / chunkSize));
+		b.stats.requests++;
+		b.stats.bytes += head.length;
+		if (head.length === Math.min(chunkSize, b.size)) {
+			let c0 = head;
+			if (c0.length < chunkSize) {
+				c0 = new Uint8Array(chunkSize);
+				c0.set(head);
+			}
+			b.chunks.set(0, c0);
+		}
+		b.header = readDistroHeader(head, b.size);
+		const n = prefetch === false ? 0 : Math.min(b.size, Math.max(0, prefetch ?? b.header?.prefetch ?? 0));
+		if (n > 0) b.#prefetch(n, validator);
 		return b;
 	}
 	read(off, len) {
@@ -4923,38 +5234,181 @@ var HttpBase = class HttpBase {
 			return out;
 		};
 		if (!waits.length) return assemble();
-		return Promise.all(waits).then(assemble);
+		return Promise.all(waits).then(() => {
+			for (let c = c0; c <= c1; c++) if (!this.chunks.has(c)) return this.read(off, len);
+			return assemble();
+		});
+	}
+	#check(r, total, what, validator = this.validator) {
+		const v = r.headers.get("etag") ?? r.headers.get("last-modified") ?? "";
+		if ((total === void 0 || total === this.size) && !(validator && v && v !== validator)) return;
+		r.body?.cancel().catch(() => {});
+		throw new Error(`${this.url}: ${what}: the image changed since it was opened (size ${total ?? "?"}, ${v || "no validator"}; opened as ${this.size}, ${validator || "no validator"})`);
+	}
+	#seen = "";
+	async #get(headers, ok) {
+		const init = headers ? { headers } : {};
+		if (!this.#seen) {
+			const r = await fetch(this.url, init);
+			ok(r);
+			return r;
+		}
+		const cached = await fetch(this.url, {
+			...init,
+			cache: "force-cache"
+		});
+		try {
+			ok(cached);
+			return cached;
+		} catch {}
+		const r = await fetch(this.url, {
+			...init,
+			cache: "reload"
+		});
+		ok(r);
+		return r;
 	}
 	#fetchRun(c0, c1) {
 		const cs = this.chunkSize;
 		const start = c0 * cs, end = Math.min(this.size, c1 * cs);
 		const p = (async () => {
 			this.stats.requests++;
-			const r = await fetch(this.url, { headers: { range: `bytes=${start}-${end - 1}` } });
-			if (r.status !== 206) throw new Error(`${this.url}: range ${start}-${end - 1}: HTTP ${r.status}`);
+			this.stats.lazyRequests++;
+			const r = await this.#get({ range: `bytes=${start}-${end - 1}` }, (r) => {
+				if (r.status !== 206) throw new Error(`${this.url}: range ${start}-${end - 1}: HTTP ${r.status}`);
+				if (this.validator !== null || this.#seen) this.#check(r, totalOf(r) ?? -1, `range ${start}-${end - 1}`, this.validator ?? this.#seen);
+			});
 			const buf = new Uint8Array(await r.arrayBuffer());
 			if (buf.length !== end - start) throw new Error(`${this.url}: short range read`);
 			this.stats.bytes += buf.length;
 			for (let c = c0; c < c1; c++) {
 				const s = (c - c0) * cs;
-				let chunk = buf.subarray(s, Math.min(buf.length, s + cs));
-				if (chunk.length < cs) {
-					const full = new Uint8Array(cs);
-					full.set(chunk);
-					chunk = full;
-				}
-				this.chunks.set(c, chunk);
+				this.#put(c, buf.subarray(s, Math.min(buf.length, s + cs)));
 			}
 		})();
 		for (let c = c0; c < c1; c++) this.pending.set(c, p);
 		const clear = () => {
-			for (let c = c0; c < c1; c++) this.pending.delete(c);
+			for (let c = c0; c < c1; c++) if (this.pending.get(c) === p) this.pending.delete(c);
 		};
 		p.then(clear, clear);
 		return p;
 	}
+	#put(c, data) {
+		if (data.length < this.chunkSize) {
+			const full = new Uint8Array(this.chunkSize);
+			full.set(data);
+			data = full;
+		}
+		this.chunks.set(c, data);
+	}
+	#prefetch(n, validator) {
+		const cs = this.chunkSize, whole = n >= this.size;
+		const c1 = Math.ceil(Math.min(n, this.size) / cs);
+		let c0 = 0;
+		while (c0 < c1 && this.chunks.has(c0)) c0++;
+		if (c0 >= c1) return;
+		const settle = /* @__PURE__ */ new Map();
+		for (let c = c0; c < c1; c++) {
+			if (this.chunks.has(c) || this.pending.has(c)) continue;
+			const p = new Promise((resolve) => settle.set(c, resolve));
+			this.pending.set(c, p);
+		}
+		const done = (c) => {
+			const s = settle.get(c);
+			if (!s) return;
+			settle.delete(c);
+			this.pending.delete(c);
+			s();
+		};
+		const start = whole ? 0 : c0 * cs, end = whole ? this.size : Math.min(this.size, c1 * cs);
+		this.stats.prefetch = end;
+		this.stats.prefetchState = "running";
+		let reader;
+		(async () => {
+			this.stats.requests++;
+			const r = await this.#get(whole ? void 0 : { range: `bytes=${start}-${end - 1}` }, (r) => {
+				if (whole) {
+					if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+					const len = r.headers.get("content-encoding") ? null : r.headers.get("content-length");
+					this.#check(r, len === null ? void 0 : Number(len), "GET", validator);
+				} else {
+					if (r.status !== 206) throw new Error(`HTTP ${r.status}`);
+					this.#check(r, totalOf(r) ?? -1, `prefetch ${start}-${end - 1}`, validator);
+				}
+			});
+			if (!r.body) throw new Error("no response body");
+			reader = r.body.getReader();
+			let pos = start, cur = new Uint8Array(cs), fill = 0;
+			for (;;) {
+				const { done: eof, value } = await reader.read();
+				if (eof) break;
+				let o = 0;
+				while (o < value.length) {
+					if (pos + o >= end) throw new Error("longer than expected");
+					const k = Math.min(cs - fill, value.length - o, end - pos - o);
+					cur.set(value.subarray(o, o + k), fill);
+					fill += k;
+					o += k;
+					const at = pos + o;
+					if (fill === cs || at === end) {
+						const c = Math.floor((at - 1) / cs);
+						if (!this.chunks.has(c)) this.#put(c, fill === cs ? cur : cur.subarray(0, fill));
+						done(c);
+						cur = new Uint8Array(cs);
+						fill = 0;
+					}
+				}
+				pos += value.length;
+				this.stats.bytes += value.length;
+				this.stats.prefetchBytes += value.length;
+			}
+			if (pos !== end) throw new Error(`ended at ${pos} of ${end}`);
+			this.stats.prefetchState = "done";
+		})().catch((e) => {
+			reader?.cancel().catch(() => {});
+			this.stats.prefetchState = "failed";
+			this.log(`[host] ${this.url}: prefetch failed (${e?.message ?? e}); reading lazily`);
+		}).finally(() => {
+			for (const c of [...settle.keys()]) done(c);
+		});
+	}
 };
-const HEAD = 0;
+var BaseDisk = class {
+	base;
+	size;
+	readOnly = true;
+	flags = 1;
+	constructor(base) {
+		this.base = base;
+		this.size = Math.floor(base.size / 512) * 512;
+	}
+	get stats() {
+		return this.base.stats;
+	}
+	read(off, views) {
+		const len = views.reduce((n, v) => n + v.length, 0);
+		const r = this.base.read(off, len);
+		return r instanceof Promise ? r.then((buf) => scatter(views, buf)) : scatter(views, r);
+	}
+	write() {
+		throw new Error("read-only disk");
+	}
+	snapshotState() {
+		if (!this.base.identity) throw new Error("its base image has no identity to check on restore");
+		return {
+			name: this.base.identity,
+			identity: `base ${this.base.identity}`,
+			gen: 0
+		};
+	}
+	snapshotSeal() {
+		return {
+			state: this.snapshotState(),
+			done: Promise.resolve()
+		};
+	}
+};
+const HEAD$1 = 0;
 const TAIL = 1;
 const WAITING = 2;
 const SPACE = 3;
@@ -4997,24 +5451,24 @@ var ConsoleRing = class {
 		return Atomics.load(this.ctl, DROPPED);
 	}
 	get used() {
-		return this.ctl[HEAD] - this.ctl[TAIL] | 0;
+		return this.ctl[HEAD$1] - this.ctl[TAIL] | 0;
 	}
 	get quiet() {
 		const c = this.ctl;
-		return Atomics.load(c, HEAD) === Atomics.load(c, TAIL) && Atomics.load(c, BATCHES) === 0;
+		return Atomics.load(c, HEAD$1) === Atomics.load(c, TAIL) && Atomics.load(c, BATCHES) === 0;
 	}
 	get pending() {
-		return this.ctl[HEAD] !== this.ctl[TAIL];
+		return this.ctl[HEAD$1] !== this.ctl[TAIL];
 	}
 	tryWrite(src, p, len) {
 		const c = this.ctl, cap = this.#cap;
 		const need = 4 + (len + 3 & -4);
-		let head = Atomics.load(c, HEAD);
+		let head = Atomics.load(c, HEAD$1);
 		let used;
 		for (;;) {
 			used = (head - Atomics.load(c, TAIL) | 0) + need;
 			if (used > cap) return false;
-			const was = Atomics.compareExchange(c, HEAD, head, head + need | 0);
+			const was = Atomics.compareExchange(c, HEAD$1, head, head + need | 0);
 			if (was === head) break;
 			head = was;
 		}
@@ -5031,7 +5485,7 @@ var ConsoleRing = class {
 	committedAtTail() {
 		const c = this.ctl;
 		const tail = Atomics.load(c, TAIL);
-		return tail !== Atomics.load(c, HEAD) && Atomics.load(this.#words, (tail & this.#cap - 1) >> 2) !== 0;
+		return tail !== Atomics.load(c, HEAD$1) && Atomics.load(this.#words, (tail & this.#cap - 1) >> 2) !== 0;
 	}
 	kick(w = Atomics.load(this.ctl, WAITING)) {
 		if (w !== 0 && Atomics.compareExchange(this.ctl, WAITING, w, 0) === w) Atomics.notify(this.ctl, WAITING);
@@ -5106,7 +5560,7 @@ var ConsoleRing = class {
 		}
 		try {
 			const cap = this.#cap, mask = cap - 1, words = this.#words, data = this.#data;
-			const tail0 = Atomics.load(c, TAIL), head = Atomics.load(c, HEAD);
+			const tail0 = Atomics.load(c, TAIL), head = Atomics.load(c, HEAD$1);
 			let tail = tail0, total = 0;
 			while (tail !== head) {
 				const len = Atomics.load(words, (tail & mask) >> 2);
@@ -5237,10 +5691,52 @@ function sumJitStats(first, rest) {
 const CAP_AVAILABLE = 1;
 const CAP_MEM32 = 2;
 const CAP_SHARED = 8;
+const CAP_TABLE = 16;
+const CAP_SIMD = 32;
+const SIMD_PROBE = new Uint8Array([
+	0,
+	97,
+	115,
+	109,
+	1,
+	0,
+	0,
+	0,
+	1,
+	5,
+	1,
+	96,
+	0,
+	1,
+	123,
+	3,
+	2,
+	1,
+	0,
+	10,
+	10,
+	1,
+	8,
+	0,
+	65,
+	0,
+	253,
+	15,
+	253,
+	98,
+	11
+]);
+function jitSimd() {
+	try {
+		return WebAssembly.validate(SIMD_PROBE);
+	} catch {
+		return false;
+	}
+}
 const WARM = 1;
 const MAX_MODULE = 1 << 20;
 const MAX_LOGGED = 5;
-const KWEMU_STATS_WORDS = 501;
+const KWEMU_STATS_WORDS = 2037;
 const KW_CPU_ICOUNT = 32;
 const RETAINED_NUDGE = 256;
 const RETAINED_LIMIT = 2048;
@@ -5262,6 +5758,7 @@ var JitHost = class {
 	#nudgeCheckCollected = 0;
 	#debugStats;
 	#cpuOfBuf;
+	#simd;
 	#buf;
 	constructor(opts) {
 		this.#opts = opts;
@@ -5335,7 +5832,8 @@ var JitHost = class {
 			return 0;
 		}
 		const shared = typeof SharedArrayBuffer !== "undefined" && this.#opts.memory().buffer instanceof SharedArrayBuffer;
-		return CAP_AVAILABLE | (this.#opts.memory64() ? 0 : CAP_MEM32) | (shared ? CAP_SHARED : 0);
+		this.#simd ??= jitSimd();
+		return CAP_AVAILABLE | (this.#opts.memory64() ? 0 : CAP_MEM32) | (shared ? CAP_SHARED : 0) | CAP_TABLE | (this.#simd ? CAP_SIMD : 0);
 	}
 	compile(ptr, len, slot, flags = 0) {
 		const st = this.stats;
@@ -5356,7 +5854,10 @@ var JitHost = class {
 			if (!(n > 0 && n <= MAX_MODULE && p >= 0 && p + n <= mem.buffer.byteLength)) throw new Error(`bad module range ${p}+${n}`);
 			const view = new Uint8Array(mem.buffer, p, n);
 			const module = new WebAssembly.Module(mem.buffer instanceof ArrayBuffer ? view : view.slice());
-			const f = new WebAssembly.Instance(module, { env: { memory: mem } }).exports.f;
+			const f = new WebAssembly.Instance(module, { env: {
+				memory: mem,
+				table
+			} }).exports.f;
 			if (typeof f !== "function") throw new Error("the module exports no function f");
 			if (flags & WARM) f(0n, 0n, 0n, 0n);
 			const idx = this.#big ? BigInt(slot) : slot;
@@ -8812,7 +9313,16 @@ function wispBackend(url, opts = {}) {
 const DEVICE_SPEC_VERSION = 1;
 const coreDevices = {
 	disks: { async http(spec, ctx) {
-		return new CowDisk(await HttpBase.open(spec.url, { chunkSize: spec.chunkSize }), { log: ctx.log });
+		const opts = {
+			chunkSize: spec.chunkSize,
+			prefetch: spec.prefetch,
+			log: ctx.log
+		};
+		if (spec.readOnly) return new BaseDisk(await HttpBase.open(spec.url, {
+			...opts,
+			strict: true
+		}));
+		return new CowDisk(await HttpBase.open(spec.url, opts), { log: ctx.log });
 	} },
 	backends: { wisp: (spec, ctx) => wispBackend(spec.servers, {
 		headers: spec.headers,
@@ -8892,6 +9402,166 @@ function buildNet(spec, registry, ctx) {
 		if (!spec.optional) throw e;
 		ctx.log(`[host] network left out: ${e?.message ?? e}`);
 		return;
+	}
+}
+const SB = 1024;
+const HEAD = 65536;
+const EROFS_MAGIC = 3774210530;
+const EXT4_MAGIC = 61267;
+const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+const label = (b) => new TextDecoder().decode(b.subarray(0, b.indexOf(0) < 0 ? b.length : b.indexOf(0)));
+function hash53(b) {
+	let h1 = 3735928559, h2 = 1103547991;
+	for (let i = 0; i < b.length; i++) {
+		const c = b[i];
+		h1 = Math.imul(h1 ^ c, 2654435761);
+		h2 = Math.imul(h2 ^ c, 1597334677);
+	}
+	h1 = Math.imul(h1 ^ h1 >>> 16, 2246822507) ^ Math.imul(h2 ^ h2 >>> 13, 3266489909);
+	h2 = Math.imul(h2 ^ h2 >>> 16, 2246822507) ^ Math.imul(h1 ^ h1 >>> 13, 3266489909);
+	return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
+}
+function probeDistro(head) {
+	if (head.length < 1160) return null;
+	const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+	if (dv.getUint32(SB, true) === EROFS_MAGIC) return {
+		fs: "erofs",
+		uuid: hex(head.subarray(1072, 1088)),
+		label: label(head.subarray(1088, 1104))
+	};
+	if (dv.getUint16(1080, true) === EXT4_MAGIC) return {
+		fs: "ext4",
+		uuid: hex(head.subarray(1128, 1144)),
+		label: label(head.subarray(1144, 1160))
+	};
+	return null;
+}
+var DistroDisk = class DistroDisk {
+	inner;
+	info;
+	size;
+	readOnly = true;
+	flags = 1;
+	blockSize;
+	constructor(inner, info) {
+		this.inner = inner;
+		this.info = info;
+		this.size = inner.size;
+		if (inner.blockSize) this.blockSize = inner.blockSize;
+	}
+	static async open(inner, { name, log } = {}) {
+		if (inner instanceof DistroDisk) return inner;
+		name ??= stampOf(inner)?.name ?? "the distro image";
+		const head = new Uint8Array(Math.min(HEAD, inner.size));
+		const r = inner.read(0, [head]);
+		if (r instanceof Promise) await r;
+		const fs = probeDistro(head);
+		if (!fs) throw new Error(`${name} is neither an erofs nor an ext4 image`);
+		if (fs.label !== "kwroot") (log ?? ((m) => console.warn(m)))(`[host] distro: ${name} is labelled "${fs.label}", not "kwroot": the base initramfs will not find it`);
+		const identity = `distro ${fs.fs} size=${inner.size} uuid=${fs.uuid} label=${fs.label} head=${hash53(head)}`;
+		const h = readDistroHeader(head, inner.size);
+		const hint = h ? {
+			distro: h.distro,
+			image: h.image,
+			prefetch: h.prefetch
+		} : {};
+		return new DistroDisk(inner, {
+			name,
+			...fs,
+			size: inner.size,
+			identity,
+			...hint
+		});
+	}
+	get stats() {
+		return this.inner.stats;
+	}
+	read(off, views) {
+		return this.inner.read(off, views);
+	}
+	write() {
+		throw new Error("the distro image is read-only");
+	}
+	snapshotState() {
+		return {
+			name: this.info.name,
+			identity: this.info.identity,
+			gen: 0,
+			stamp: stampOf(this.inner)?.stamp
+		};
+	}
+	snapshotSeal() {
+		return {
+			state: this.snapshotState(),
+			done: Promise.resolve()
+		};
+	}
+	close() {
+		this.inner.close?.();
+	}
+};
+function stampOf(d) {
+	try {
+		const s = d.snapshotState?.();
+		return s && {
+			name: s.name,
+			stamp: s.stamp ?? s.identity
+		};
+	} catch {
+		return;
+	}
+}
+function distroSpecOf(src, toSpec) {
+	if (toSpec) return toSpec(src);
+	const url = String(src);
+	if (!/^https?:/i.test(url)) throw new BootError("boot", `distro: ${url}: this platform opens only http(s) URLs`);
+	return {
+		kind: "http",
+		url,
+		readOnly: true
+	};
+}
+function readOnlySpec(spec) {
+	if (spec.kind === "data") throw new BootError("boot", "distro: a \"data\" disk spec cannot be a distro image (use a \"file\" or \"http\" spec)");
+	const out = {
+		...spec,
+		readOnly: true
+	};
+	delete out.snapshot;
+	return out;
+}
+async function openDistro(src, registry, ctx, toSpec) {
+	const item = typeof src === "string" || src instanceof URL ? distroSpecOf(src, toSpec) : isDiskSpec(src) ? readOnlySpec(src) : src;
+	const owned = isDiskSpec(item);
+	const name = owned ? item.path ?? item.url : void 0;
+	let dev;
+	try {
+		if (owned) {
+			const spec = item;
+			if (spec.v !== void 0 && spec.v !== 1) throw new BootError("support", `disk kind "${spec.kind}": spec version ${spec.v}, this SDK reads 1`);
+			const make = registry?.disks[spec.kind];
+			if (!make) throw new BootError("support", `disk kind "${spec.kind}" is not available on this platform`);
+			dev = await make(spec, {
+				...ctx,
+				index: -1
+			});
+		} else dev = item;
+	} catch (e) {
+		throw e instanceof BootError ? new BootError(e.stage, `distro: ${e.message}`, { cause: e }) : new BootError("boot", `distro: ${e?.message ?? e}`, { cause: e });
+	}
+	try {
+		return {
+			disk: await DistroDisk.open(dev, {
+				name,
+				log: ctx.log
+			}),
+			owned
+		};
+	} catch (e) {
+		if (owned) try {
+			dev.close?.();
+		} catch {}
+		throw new BootError("boot", `distro: ${e?.message ?? e}`, { cause: e });
 	}
 }
 const OUTPUT_BACKLOG = 1 << 20;
@@ -9419,6 +10089,8 @@ function checkWorkerOptions(platform, opts) {
 	if (!platform.spawnWorker) throw new BootError("support", "createKernel({ worker: true }) is not supported on this platform");
 	const objects = (opts.disks ?? []).map((d, i) => isDiskSpec(d) ? -1 : i).filter((i) => i >= 0);
 	if (objects.length) throw new BootError("support", `createKernel({ worker: true }): disks[${objects.join("], disks[")}] ${objects.length > 1 ? "are BlockDevice objects, which" : "is a BlockDevice object, which"} cannot cross to the worker; ${SPEC_HINT}`);
+	const d = opts.distro;
+	if (d !== void 0 && typeof d !== "string" && !(d instanceof URL) && !isDiskSpec(d)) throw new BootError("support", `createKernel({ worker: true }): distro is a BlockDevice object, which cannot cross to the worker; pass its path or URL, or a spec ({ kind: "file", path } on Node, { kind: "http", url })`);
 	if (opts.net && !isNetSpec(opts.net)) throw new BootError("support", `createKernel({ worker: true }): net is a NetDevice or NetBackend object, which cannot cross to the worker; ${NET_HINT}`);
 	if (typeof opts.vsock === "object" && opts.vsock.raw) throw new BootError("support", "createKernel({ worker: true }): vsock.raw (the guest's packets in a callback) is inline only; use vm.vsock, which works in worker mode");
 }
@@ -9489,6 +10161,7 @@ function displayNow(opt, log) {
 }
 var WorkerKernel = class {
 	cmdline = "";
+	distro = void 0;
 	memoryMiB = 0;
 	memory64 = false;
 	exited;
@@ -9527,6 +10200,7 @@ var WorkerKernel = class {
 	#vsock;
 	#vsockOut = [];
 	#mounts;
+	#commands;
 	#shm;
 	#shmCalls = /* @__PURE__ */ new Map();
 	#nextShm = 1;
@@ -9580,6 +10254,7 @@ var WorkerKernel = class {
 			});
 		}
 		this.#mounts = new MountTable(this.#vsock, opts.log);
+		this.#commands = new CommandTable(this.#vsock, opts.log);
 		if (opts.shm) this.#shm = new ShmClient({ run: (call) => new Promise((resolve, reject) => {
 			if (this.#result) {
 				reject(new ShmError("ECONNABORTED", `${call.op}: the kernel exited`));
@@ -9639,6 +10314,7 @@ var WorkerKernel = class {
 				break;
 			case "started":
 				this.cmdline = m.cmdline;
+				this.distro = m.distro;
 				this.memoryMiB = m.memoryMiB;
 				this.memory64 = m.memory64;
 				this.#setStats(m.stats);
@@ -9770,6 +10446,7 @@ var WorkerKernel = class {
 		this.#evdev?.close();
 		this.#frames?.close();
 		this.#shared?.close();
+		this.#commands.shutdown();
 		this.#mounts.shutdown();
 		this.#vsock?.shutdown();
 		for (const c of this.#shmCalls.values()) c.reject(new ShmError("ECONNABORTED", "the kernel exited"));
@@ -9857,13 +10534,13 @@ var WorkerKernel = class {
 		return this.#vsock;
 	}
 	spawn(file, args, opts) {
-		return this.#mounts.gate(() => spawnOn(this.#vsock, file, args, opts));
+		return this.#mounts.gate(() => this.#commands.gate(() => spawnOn(this.#vsock, file, args, opts)));
 	}
 	exec(file, args, opts) {
-		return this.#mounts.gate(() => execOn(this.#vsock, file, args, opts));
+		return this.#mounts.gate(() => this.#commands.gate(() => execOn(this.#vsock, file, args, opts)));
 	}
 	connect(port, opts) {
-		return this.#mounts.gate(() => connectOn(this.#vsock, port, opts));
+		return this.#mounts.gate(() => this.#commands.gate(() => connectOn(this.#vsock, port, opts)));
 	}
 	fetch(input, init) {
 		return fetchOver((port, o) => this.connect(port, o), input, init);
@@ -9876,6 +10553,18 @@ var WorkerKernel = class {
 	}
 	startMounts(list) {
 		this.#mounts.mountAll(list);
+	}
+	addCommand(name, handler, opts) {
+		return this.#commands.add(name, handler, opts);
+	}
+	removeCommand(name, opts) {
+		return this.#commands.remove(name, opts);
+	}
+	get commands() {
+		return this.#commands.commands;
+	}
+	startCommands(list) {
+		this.#commands.addAll(list);
 	}
 	get shm() {
 		return this.#shm;
@@ -10018,11 +10707,13 @@ async function createKernelInWorker(platform, opts, progress) {
 		if (initrd instanceof WebAssembly.Module) throw new BootError("download", "initrd: a WebAssembly.Module is not an initramfs");
 		if (signal?.aborted) throw new BootError("download", "aborted", { cause: signal.reason });
 		const [disks, diskTransfer] = toWorkerDisks(opts.disks ?? [], platform);
+		const distro = opts.distro === void 0 ? void 0 : toWorkerDisks([typeof opts.distro === "string" || opts.distro instanceof URL ? distroSpecOf(opts.distro, platform.distroSpec) : readOnlySpec(opts.distro)], platform)[0][0];
 		const [restore, restoreTransfer] = toWorkerRestore(opts.restore, !!opts.transferRestore);
 		spec = {
 			kernel,
 			initrd,
 			disks,
+			distro,
 			net: opts.net,
 			cmdline: opts.cmdline,
 			memoryMiB: opts.memoryMiB ?? platform.defaultMemoryMiB?.() ?? 512,
@@ -10096,6 +10787,7 @@ var KernelInstance = class {
 	module;
 	cmdline;
 	net;
+	distro = void 0;
 	skippedDisks = [];
 	#owned = [];
 	exited;
@@ -10105,6 +10797,7 @@ var KernelInstance = class {
 	#vsock;
 	#shm;
 	#mounts = new MountTable(void 0, () => {});
+	#commands = new CommandTable(void 0, () => {});
 	constructor(kernel, module, cmdline, net, compileMs) {
 		this.kernel = kernel;
 		this.module = module;
@@ -10114,6 +10807,7 @@ var KernelInstance = class {
 		this.#out = new ConsoleOutput(() => !!kernel.result);
 		if (kernel.shm.enabled) this.#shm = inlineShm(kernel.shm);
 		this.exited = kernel.exited.then((res) => {
+			this.#commands.shutdown();
 			this.#mounts.shutdown();
 			this.#vsock?.shutdown();
 			this.#shm?.shutdown();
@@ -10126,6 +10820,7 @@ var KernelInstance = class {
 	attachVsock(host) {
 		this.#vsock = host;
 		const mounts = this.#mounts = new MountTable(host, host.log);
+		this.#commands = new CommandTable(host, host.log);
 		this.kernel.vsock.onSave = () => mounts.save();
 		this.kernel.vsock.hostBusy = () => mounts.snapshotBusy();
 	}
@@ -10137,17 +10832,23 @@ var KernelInstance = class {
 	startMounts(list) {
 		this.#mounts.mountAll(list);
 	}
+	startCommands(list) {
+		this.#commands.addAll(list);
+	}
+	#gate(fn) {
+		return this.#mounts.gate(() => this.#commands.gate(fn));
+	}
 	get vsock() {
 		return this.#vsock;
 	}
 	spawn(file, args, opts) {
-		return this.#mounts.gate(() => spawnOn(this.#vsock, file, args, opts));
+		return this.#gate(() => spawnOn(this.#vsock, file, args, opts));
 	}
 	exec(file, args, opts) {
-		return this.#mounts.gate(() => execOn(this.#vsock, file, args, opts));
+		return this.#gate(() => execOn(this.#vsock, file, args, opts));
 	}
 	connect(port, opts) {
-		return this.#mounts.gate(() => connectOn(this.#vsock, port, opts));
+		return this.#gate(() => connectOn(this.#vsock, port, opts));
 	}
 	fetch(input, init) {
 		return fetchOver((port, o) => this.connect(port, o), input, init);
@@ -10157,6 +10858,15 @@ var KernelInstance = class {
 	}
 	get mounts() {
 		return this.#mounts.mounts;
+	}
+	addCommand(name, handler, opts) {
+		return this.#commands.add(name, handler, opts);
+	}
+	removeCommand(name, opts) {
+		return this.#commands.remove(name, opts);
+	}
+	get commands() {
+		return this.#commands.commands;
 	}
 	get shm() {
 		return this.#shm;
@@ -10268,6 +10978,7 @@ async function createKernelOn(platform, opts = {}) {
 	const vopt = opts.vsock ?? true;
 	const raw = typeof vopt === "object" ? vopt.raw : void 0;
 	const mounts = parseMounts(opts.mounts, !!vopt && !raw);
+	const commands = parseCommands(opts.commands, !!vopt && !raw);
 	const savedMounts = opts.restore?.devices?.vsock?.mounts;
 	if (savedMounts?.mounts.length && (opts.worker || raw)) throw new BootError("boot", `snapshot: it has host file systems (${savedMounts.mounts.map((m) => m.path).join(", ")}), which resume inline only (not in worker mode or with vsock.raw)`);
 	const mountsWhy = opts.restore && snapshotMountMismatch(savedMounts, mounts);
@@ -10276,6 +10987,7 @@ async function createKernelOn(platform, opts = {}) {
 		checkWorkerOptions(platform, opts);
 		const vm = await createKernelInWorker(platform, opts, progress);
 		vm.startMounts(mounts);
+		vm.startCommands(commands);
 		return vm;
 	}
 	const loadOpts = {
@@ -10313,9 +11025,20 @@ async function createKernelOn(platform, opts = {}) {
 			} catch {}
 		}
 	};
+	if (opts.distro !== void 0 && !initrd && opts.cmdline === void 0 && !opts.restore) throw new BootError("boot", "distro: the kernel has no initramfs to mount it (use the bundled kernel, unkernel.wasm, or pass initrd or cmdline)");
+	const distro = opts.distro === void 0 ? void 0 : await openDistro(opts.distro, platform.devices, devCtx, platform.distroSpec);
 	const items = opts.disks ?? [];
-	const { disks, skipped } = await buildDisks(items, platform.devices, devCtx);
-	const owned = disks.filter((d) => !items.includes(d));
+	let built;
+	try {
+		built = await buildDisks(items, platform.devices, devCtx);
+	} catch (e) {
+		if (distro?.owned) distro.disk.close();
+		throw e;
+	}
+	const { skipped } = built;
+	const owned = built.disks.filter((d) => !items.includes(d));
+	if (distro?.owned) owned.push(distro.disk);
+	const disks = distro ? [distro.disk, ...built.disks] : built.disks;
 	const cmdline = opts.cmdline ?? (initrdBytes === void 0 && bundled.initrd && bundled.cmdline ? bundled.cmdline : disks.length && !initrd ? "console=hvc0 root=/dev/wda rw" : "console=hvc0 rdinit=/init");
 	const net = !opts.net ? void 0 : isNetSpec(opts.net) ? buildNet(opts.net, platform.devices, devCtx) : isBackend(opts.net) ? new NetStack({
 		backend: opts.net,
@@ -10378,6 +11101,7 @@ async function createKernelOn(platform, opts = {}) {
 	instance = new KernelInstance(kernel, module, cmdline, net, compileMs);
 	if (vsock) instance.attachVsock(vsock);
 	instance.skippedDisks = skipped;
+	instance.distro = distro?.disk.info;
 	instance.own(owned);
 	if (opts.consoleSize) kernel.setConsoleSize(opts.consoleSize.cols, opts.consoleSize.rows);
 	let rest = mounts;
@@ -10403,6 +11127,7 @@ async function createKernelOn(platform, opts = {}) {
 	}
 	booting.catch(() => {});
 	instance.startMounts(rest);
+	instance.startCommands(commands);
 	if (signal) {
 		const onAbort = () => instance.stop({
 			code: 130,
@@ -10639,4 +11364,519 @@ async function checkSupport() {
 		problems
 	};
 }
-export { ABS_MAX, ABS_X, ABS_Y, ANSI, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BootError, ConsoleRouter, CowDisk, DEFAULT_DISPLAY_SIZE, DEFAULT_WISP_SERVERS, DEVICE_SPEC_VERSION, DOM_CODE_TO_LINUX, DisplayHost, EV_ABS, EV_KEY, EV_REL, EV_SYN, FOURCC_XRGB8888, F_DISCARD, F_FLUSH, F_RO, F_WRITE_ZEROES, FlushTracker, FsError, HTTP_MAX_HEADER_BYTES, HttpBase, IMPORTANT, INPUT_KEYBOARD, INPUT_MOUSE, INPUT_TABLET, IRQ_SYNC, InputHost, JitHost, KSTAMP, KWSPARSE_MAGIC, Kernel, KernelInstance, MemoryFs, MountError, NetStack, PtyError, REL_WHEEL, REL_X, REL_Y, SHM_PAGE_SIZE, SOUND_FORMAT_S16_LE, SOUND_FORMAT_U8, ShmClient, ShmDevice, ShmError, SoundHost, SparseBase, TTY_FEATURE_CONNECT, TTY_FEATURE_PIPES, TTY_PORT, TTY_SIGNALS, TTY_VERSION, TtyFrameParser, VSOCK_GUEST_CID, VSOCK_HEADER_SIZE, VSOCK_HOST_CID, VsockDevice, VsockError, VsockHost, WorkerKernel, ZERO_BLOCK, ZeroBase, bundledBoot, checkJspi, checkSupport, connectGuest, convertPcm, coreDevices, createKernelOn, decodeKwsparse, decodeSnapshot, decodeVsockHeader, domButtonToLinux, domCodeToLinux, download, encodeKwsparse, encodeSnapshot, encodeTtyFrame, encodeTtyOpen, encodeTtyResize, encodeVsockPacket, execSubprocess, extendDevices, fetchOver, frameToPpm, gunzipIfNeeded, gzipBlob, inlineShm, ip4$1 as ip4, ip4str, isDiskSpec, isNetSpec, isZeroBlock, kwsparseHeader, loadBytes, loadKernelModule, moduleIsMemory64, pcmToFloat32, readKwsparse, sharedMemoryAvailable, smpKernelFromBundle, snapshotDeviceMismatch, snapshotDiskMismatch, spawnPty, spawnSubprocess, wavHeader, wispBackend, xrgbToRgba };
+const WASI_MODULES = ["wasi_snapshot_preview1", "wasi_unstable"];
+const CH_INITIAL = 262208;
+const CH_MAX = 67108936;
+function channelRoom(sab, bytes) {
+	const need = 64 + bytes;
+	if (need > 67108936) return false;
+	if (sab.byteLength < need) {
+		let size = sab.byteLength;
+		while (size < need) size *= 2;
+		sab.grow(Math.min(size, CH_MAX));
+	}
+	return true;
+}
+Atomics.pause;
+var Enc = class {
+	#buf = /* @__PURE__ */ new Uint8Array(64);
+	#dv = new DataView(this.#buf.buffer);
+	#len = 8;
+	#grow(n) {
+		if (this.#len + n <= this.#buf.length) return;
+		let cap = this.#buf.length * 2;
+		while (cap < this.#len + n) cap *= 2;
+		const b = new Uint8Array(cap);
+		b.set(this.#buf.subarray(0, this.#len));
+		this.#buf = b;
+		this.#dv = new DataView(b.buffer);
+	}
+	u32(v) {
+		this.#grow(4);
+		this.#dv.setUint32(this.#len, v >>> 0, true);
+		this.#len += 4;
+		return this;
+	}
+	u64(v) {
+		this.#grow(8);
+		this.#dv.setBigUint64(this.#len, BigInt.asUintN(64, v), true);
+		this.#len += 8;
+		return this;
+	}
+	bytes(b) {
+		this.#grow(b.length);
+		this.#buf.set(b, this.#len);
+		this.#len += b.length;
+		return this;
+	}
+	str(b) {
+		return this.u32(b.length).bytes(b);
+	}
+	frame(op, more = 0) {
+		this.#dv.setUint32(0, op, true);
+		this.#dv.setUint32(4, this.#len - 8 + more, true);
+		return this.#buf.subarray(0, this.#len);
+	}
+};
+const WASI_EXEC_PORT = 1021;
+function wasiSharedChannelAvailable() {
+	return sharedMemoryAvailable() && typeof Atomics.waitAsync === "function" && typeof SharedArrayBuffer.prototype.grow === "function";
+}
+var ByteReader = class {
+	#reader;
+	#chunks = [];
+	#have = 0;
+	constructor(stream) {
+		this.#reader = stream.getReader();
+	}
+	async exact(n) {
+		if (!await this.#fill(n)) return null;
+		const c = this.#chunks[0];
+		if (c.length === n) {
+			this.#chunks.shift();
+			this.#have -= n;
+			return c;
+		}
+		const out = new Uint8Array(n);
+		this.#take(out);
+		return out;
+	}
+	async into(out) {
+		if (!await this.#fill(out.length)) return false;
+		this.#take(out);
+		return true;
+	}
+	async #fill(n) {
+		while (this.#have < n) {
+			let r;
+			try {
+				r = await this.#reader.read();
+			} catch {
+				return false;
+			}
+			if (r.done) return false;
+			this.#chunks.push(r.value);
+			this.#have += r.value.length;
+		}
+		return true;
+	}
+	#take(out) {
+		const n = out.length;
+		let at = 0;
+		while (at < n) {
+			const c = this.#chunks[0];
+			const take = Math.min(c.length, n - at);
+			out.set(c.subarray(0, take), at);
+			at += take;
+			if (take === c.length) this.#chunks.shift();
+			else this.#chunks[0] = c.subarray(take);
+		}
+		this.#have -= n;
+	}
+	cancel() {
+		this.#reader.cancel().catch(() => {});
+	}
+};
+const utf8 = new TextEncoder();
+const utf8d = new TextDecoder();
+const view = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
+function serveWasiProgramsWith(vsock, opts) {
+	const port = opts.port ?? 1021;
+	const log = opts.log ?? (() => {});
+	const maxModule = opts.maxModuleBytes ?? 256 << 20;
+	const stats = {
+		started: 0,
+		running: 0,
+		failed: 0,
+		requests: 0,
+		received: 0,
+		cached: 0,
+		workers: 0,
+		idle: 0,
+		channels: 0
+	};
+	const cache = new ModuleCache(opts.moduleCache?.count ?? 16, opts.moduleCache?.bytes ?? 512 << 20, stats);
+	const pool = new WorkerPool(opts.spawn, opts.idleWorkers ?? 2, stats);
+	const shared = opts.sharedMemory ?? wasiSharedChannelAvailable();
+	const listener = vsock.listen(port, (conn) => {
+		runProgram(conn, {
+			log,
+			maxModule,
+			stats,
+			cache,
+			pool,
+			shared
+		}).catch((e) => log(`[wasi] ${e?.stack ?? e}`));
+	});
+	return {
+		port,
+		shared,
+		stats,
+		close: () => {
+			listener.close();
+			pool.close();
+		}
+	};
+}
+var ModuleCache = class ModuleCache {
+	#modules = /* @__PURE__ */ new Map();
+	#bytes = 0;
+	#ids = /* @__PURE__ */ new Map();
+	#count;
+	#limit;
+	#stats;
+	#serial = 0;
+	static ID_LIMIT = 256;
+	constructor(count, bytes, stats) {
+		this.#count = Math.max(1, count);
+		this.#limit = bytes;
+		this.#stats = stats;
+	}
+	async acquire(id) {
+		for (;;) {
+			const p = this.#ids.get(id);
+			if (!p) {
+				let done;
+				const mine = new Promise((r) => done = r);
+				this.#ids.set(id, mine);
+				while (this.#ids.size > ModuleCache.ID_LIMIT) this.#ids.delete(this.#ids.keys().next().value);
+				let claimed = false;
+				return { claim: (key) => {
+					if (claimed) return;
+					claimed = true;
+					if (!key && this.#ids.get(id) === mine) this.#ids.delete(id);
+					done(key);
+				} };
+			}
+			this.#ids.delete(id);
+			this.#ids.set(id, p);
+			const key = await p;
+			const e = key ? this.#touch(key) : void 0;
+			const module = e && await e.module.catch(() => void 0);
+			if (module) return { module };
+			if (this.#ids.get(id) === p) this.#ids.delete(id);
+		}
+	}
+	#touch(key) {
+		const e = this.#modules.get(key);
+		if (e) {
+			this.#modules.delete(key);
+			this.#modules.set(key, e);
+		}
+		return e;
+	}
+	async compile(bytes) {
+		const subtle = globalThis.crypto?.subtle;
+		const key = subtle ? Array.from(new Uint8Array(await subtle.digest("SHA-256", bytes)), (b) => b.toString(16).padStart(2, "0")).join("") : `#${++this.#serial}`;
+		const had = this.#touch(key);
+		if (had) return {
+			key,
+			module: had.module
+		};
+		const e = {
+			module: WebAssembly.compile(bytes),
+			bytes: bytes.length
+		};
+		e.module.catch(() => {
+			if (this.#modules.get(key) === e) this.#drop(key);
+		});
+		this.#modules.set(key, e);
+		this.#bytes += e.bytes;
+		while (this.#modules.size > 1 && (this.#modules.size > this.#count || this.#bytes > this.#limit)) this.#drop(this.#modules.keys().next().value);
+		this.#stats.cached = this.#modules.size;
+		return {
+			key,
+			module: e.module
+		};
+	}
+	#drop(key) {
+		const e = this.#modules.get(key);
+		if (!e) return;
+		this.#modules.delete(key);
+		this.#bytes -= e.bytes;
+		this.#stats.cached = this.#modules.size;
+	}
+};
+const MAX_FRAME = 64 << 20;
+const MAX_DATA = 262144;
+const IDENTITY = 40;
+async function receiveModule(reader, size, identity) {
+	const bytes = new Uint8Array(size);
+	for (let at = 0;;) {
+		const h = await reader.exact(8);
+		if (!h) return null;
+		const hv = view(h);
+		const op = hv.getUint32(0, true), len = hv.getUint32(4, true);
+		if (at < size) {
+			if (op !== 5 || len === 0 || len > MAX_DATA || len > size - at) return null;
+			if (!await reader.into(bytes.subarray(at, at + len))) return null;
+			at += len;
+			continue;
+		}
+		if (op !== 6 || len !== 48) return null;
+		const end = await reader.exact(48);
+		if (!end) return null;
+		return {
+			bytes,
+			same: identity.every((b, i) => b === end[i])
+		};
+	}
+}
+async function runProgram(conn, ctx) {
+	const reader = new ByteReader(conn.readable);
+	const writer = conn.writable.getWriter();
+	const send = (b) => {
+		writer.write(b).catch(() => {});
+	};
+	const exit = (code, msg = "") => {
+		send(new Enc().u32(code).bytes(utf8.encode(msg)).frame(3));
+		writer.close().catch(() => {});
+	};
+	const head = await reader.exact(8);
+	if (!head) return conn.reset();
+	const hv = view(head);
+	const op = hv.getUint32(0, true);
+	const len = hv.getUint32(4, true);
+	if (op !== 1 || len > MAX_FRAME) {
+		ctx.log(`[wasi] bad first frame (op ${op}, ${len} bytes)`);
+		return conn.reset();
+	}
+	const start = await reader.exact(len);
+	if (!start) return conn.reset();
+	const sv = view(start);
+	let at = 0;
+	const u32 = () => {
+		const v = sv.getUint32(at, true);
+		at += 4;
+		return v;
+	};
+	const str = () => {
+		const n = u32();
+		const s = start.slice(at, at + n);
+		at += n;
+		return s;
+	};
+	let args, env, identity, size, unsettled;
+	const preopens = [];
+	try {
+		const version = u32();
+		if (version !== 2) return exit(126, `kwwasi: protocol version ${version}, the host speaks 2`);
+		const argc = u32(), envc = u32(), npre = u32();
+		identity = start.slice(at, at + IDENTITY);
+		size = Number(sv.getBigUint64(at, true));
+		unsettled = (sv.getBigUint64(at + IDENTITY, true) & 1n) !== 0n;
+		at += 48;
+		args = Array.from({ length: argc }, str);
+		env = Array.from({ length: envc }, str);
+		for (let i = 0; i < npre; i++) {
+			const fd = u32();
+			preopens.push([fd, str()]);
+		}
+	} catch (e) {
+		ctx.log(`[wasi] bad START frame: ${e.message}`);
+		return conn.reset();
+	}
+	const name = utf8d.decode(args[0] ?? /* @__PURE__ */ new Uint8Array());
+	if (size > ctx.maxModule) return exit(126, `kwwasi: ${name}: ${size} bytes, larger than the host takes (${ctx.maxModule})`);
+	let module;
+	const got = unsettled ? void 0 : await ctx.cache.acquire(Array.from(identity).join(","));
+	if (got && "module" in got) {
+		send(new Enc().u32(0).frame(4));
+		module = got.module;
+	} else {
+		let key;
+		try {
+			send(new Enc().u32(1).frame(4));
+			const bytes = await receiveModule(reader, size, identity);
+			if (!bytes) {
+				ctx.log(`[wasi] ${name}: kwwasi did not send the module; connection reset`);
+				return conn.reset();
+			}
+			ctx.stats.received++;
+			const c = await ctx.cache.compile(bytes.bytes);
+			try {
+				module = await c.module;
+			} catch (e) {
+				return exit(126, `kwwasi: ${name}: not a valid WebAssembly module: ${e.message}`);
+			}
+			if (bytes.same) key = c.key;
+		} finally {
+			got?.claim(key);
+		}
+	}
+	for (const imp of WebAssembly.Module.imports(module)) if (!WASI_MODULES.includes(imp.module)) return exit(126, `kwwasi: ${name}: imports ${imp.module}.${imp.name}; only wasi_snapshot_preview1 and wasi_unstable are provided`);
+	if (!WebAssembly.Module.exports(module).some((e) => e.name === "_start" && e.kind === "function")) return exit(126, `kwwasi: ${name}: no _start export (not a WASI command)`);
+	let worker;
+	try {
+		worker = ctx.pool.take();
+	} catch (e) {
+		return exit(126, `kwwasi: ${name}: cannot start a worker: ${e?.message ?? e}`);
+	}
+	ctx.stats.started++;
+	ctx.stats.running++;
+	let ended = false;
+	const end = (status, reusable = false) => {
+		if (ended) return;
+		ended = true;
+		ctx.stats.running--;
+		if (status) exit(status.code, status.msg);
+		reader.cancel();
+		if (ctl) Atomics.notify(ctl, 0);
+		ctx.pool.release(worker, reusable);
+	};
+	const replyHead = /* @__PURE__ */ new Uint8Array(8), replyView = view(replyHead);
+	const request = async (frame, place) => {
+		if (ended) return null;
+		ctx.stats.requests++;
+		send(frame);
+		const h = await reader.into(replyHead);
+		const len = h && replyView.getUint32(0, true) === 2 ? replyView.getUint32(4, true) : -1;
+		let body = null;
+		if (len >= 4) {
+			const at = place?.(len);
+			if (place && !at) {
+				ctx.log(`[wasi] ${name}: a reply of ${len} bytes from kwwasi; connection reset`);
+				conn.reset();
+				end();
+				return null;
+			}
+			body = at ? await reader.into(at) ? at : null : await reader.exact(len);
+		}
+		if (ended) return null;
+		if (!body) {
+			if (h) ctx.log(`[wasi] ${name}: unexpected frame from kwwasi; connection reset`);
+			conn.reset();
+			end();
+			return null;
+		}
+		return body;
+	};
+	let queue = Promise.resolve();
+	const channel = ctx.shared ? new SharedArrayBuffer(CH_INITIAL, { maxByteLength: CH_MAX }) : void 0;
+	const ctl = channel && new Int32Array(channel, 0, 16);
+	if (channel && ctl) {
+		const serve = async () => {
+			let seen = 0;
+			for (;;) {
+				const w = Atomics.waitAsync(ctl, 0, seen);
+				if (w.async) await w.value;
+				if (ended) return;
+				const seq = Atomics.load(ctl, 0);
+				if (seq === seen) continue;
+				seen = seq;
+				const len = Atomics.load(ctl, 2);
+				const body = await request(new Uint8Array(channel, 64, len), (n) => channelRoom(channel, n) ? new Uint8Array(channel, 64, n) : void 0);
+				if (!body) return;
+				Atomics.store(ctl, 2, body.length);
+				Atomics.store(ctl, 1, seq);
+				Atomics.notify(ctl, 1);
+			}
+		};
+		ctx.stats.channels++;
+		serve().catch((e) => {
+			ctx.log(`[wasi] ${name}: ${e?.stack ?? e}`);
+			conn.reset();
+			end();
+		}).finally(() => ctx.stats.channels--);
+	}
+	worker.on = {
+		message: (m) => {
+			if (m.t === "request") queue = queue.then(async () => {
+				const body = await request(m.frame);
+				if (body) worker.ep.post({
+					t: "reply",
+					body
+				}, [body.buffer]);
+			});
+			else if (m.t === "exit") {
+				if (m.failed) ctx.stats.failed++;
+				queue = queue.then(() => end({
+					code: m.code,
+					msg: m.msg
+				}, true));
+			} else if (m.t === "log") ctx.log(m.msg);
+		},
+		gone: (e) => {
+			if (ended) return;
+			ctx.stats.failed++;
+			end({
+				code: 134,
+				msg: `kwwasi: ${name}: ${e ? e?.message ?? e : "its worker ended"}`
+			});
+		}
+	};
+	conn.closed.then(() => {
+		if (ended) return;
+		ctx.log(`[wasi] ${name}: kwwasi went away; worker terminated`);
+		end();
+	});
+	worker.ep.post({
+		t: "start",
+		module,
+		name,
+		args,
+		env,
+		preopens,
+		channel
+	});
+}
+var WorkerPool = class {
+	#spawn;
+	#idle = [];
+	#max;
+	#stats;
+	#closed = false;
+	constructor(spawn, max, stats) {
+		this.#spawn = spawn;
+		this.#max = max;
+		this.#stats = stats;
+	}
+	take() {
+		const idle = this.#idle.pop();
+		if (idle) {
+			this.#stats.idle--;
+			return idle;
+		}
+		const w = {
+			ep: this.#spawn(),
+			on: void 0,
+			alive: true
+		};
+		this.#stats.workers++;
+		const gone = (err) => {
+			if (!w.alive) return;
+			w.alive = false;
+			this.#stats.workers--;
+			const i = this.#idle.indexOf(w);
+			if (i >= 0) {
+				this.#idle.splice(i, 1);
+				this.#stats.idle--;
+			}
+			const on = w.on;
+			w.on = void 0;
+			on?.gone(err);
+		};
+		w.ep.listen({
+			message: (m) => w.on?.message(m),
+			error: (e) => {
+				gone(e);
+				w.ep.terminate();
+			},
+			exit: () => gone()
+		});
+		return w;
+	}
+	release(w, reusable) {
+		w.on = void 0;
+		if (!w.alive) return;
+		if (reusable && !this.#closed && this.#idle.length < this.#max) {
+			this.#idle.push(w);
+			this.#stats.idle++;
+		} else w.ep.terminate();
+	}
+	close() {
+		this.#closed = true;
+		for (const w of [...this.#idle]) w.ep.terminate();
+	}
+};
+export { ABS_MAX, ABS_X, ABS_Y, ANSI, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BaseDisk, BootError, CMD_PORT, CommandError, ConsoleRouter, CowDisk, DEFAULT_DISPLAY_SIZE, DEFAULT_WISP_SERVERS, DEVICE_SPEC_VERSION, DOM_CODE_TO_LINUX, DisplayHost, DistroDisk, EV_ABS, EV_KEY, EV_REL, EV_SYN, FOURCC_XRGB8888, F_DISCARD, F_FLUSH, F_RO, F_WRITE_ZEROES, FlushTracker, FsError, HTTP_MAX_HEADER_BYTES, HttpBase, IMPORTANT, INPUT_KEYBOARD, INPUT_MOUSE, INPUT_TABLET, IRQ_SYNC, InputHost, JitHost, KSTAMP, KWSPARSE_MAGIC, Kernel, KernelInstance, MemoryFs, MountError, NetStack, PtyError, REL_WHEEL, REL_X, REL_Y, SHM_PAGE_SIZE, SOUND_FORMAT_S16_LE, SOUND_FORMAT_U8, ShmClient, ShmDevice, ShmError, SoundHost, SparseBase, TTY_FEATURE_CONNECT, TTY_FEATURE_PIPES, TTY_PORT, TTY_SIGNALS, TTY_VERSION, TtyFrameParser, VSOCK_GUEST_CID, VSOCK_HEADER_SIZE, VSOCK_HOST_CID, VsockDevice, VsockError, VsockHost, WASI_EXEC_PORT, WorkerKernel, ZERO_BLOCK, ZeroBase, bundledBoot, checkJspi, checkSupport, connectGuest, convertPcm, coreDevices, createKernelOn, decodeKwsparse, decodeSnapshot, decodeVsockHeader, domButtonToLinux, domCodeToLinux, download, encodeKwsparse, encodeSnapshot, encodeTtyFrame, encodeTtyOpen, encodeTtyResize, encodeVsockPacket, execSubprocess, extendDevices, fetchOver, frameToPpm, gunzipIfNeeded, gzipBlob, inlineShm, ip4$1 as ip4, ip4str, isDiskSpec, isNetSpec, isZeroBlock, jitSimd, kwsparseHeader, loadBytes, loadKernelModule, moduleIsMemory64, pcmToFloat32, probeDistro, readDistroHeader, readKwsparse, serveWasiProgramsWith, sharedMemoryAvailable, smpKernelFromBundle, snapshotDeviceMismatch, snapshotDiskMismatch, spawnPty, spawnSubprocess, wavHeader, wispBackend, xrgbToRgba };

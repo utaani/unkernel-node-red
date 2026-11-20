@@ -23,17 +23,36 @@ navigator.serviceWorker.addEventListener('message', async ({ data, ports }) => {
 });
 
 async function boot() {
+  const relay = new URLSearchParams(location.search).get('wisp');
+  let net;
+  if (relay) {
+    const endpoint = new URL(relay);
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname);
+    if (endpoint.username || endpoint.password ||
+        (endpoint.protocol !== 'wss:' && !(local && endpoint.protocol === 'ws:'))) {
+      throw new Error('Wisp の URL には wss:// を使ってください。');
+    }
+    net = { kind: 'net', backend: { kind: 'wisp', servers: endpoint.href } };
+  }
   const registration = await navigator.serviceWorker.register('./sw.js');
   await navigator.serviceWorker.ready;
-  const image = await fetch('./node-red.kwsparse.gz');
-  if (!image.ok) throw new Error('イメージを取得できませんでした。HTTP ' + image.status);
-  const disk = { kind: 'data', name: 'unkernel-node-red-demo', mode: 'snapshot',
-    template: new Uint8Array(await image.arrayBuffer()) };
+  async function loadDisk(file, name) {
+    const image = await fetch(file);
+    if (!image.ok) throw new Error(file + ' を取得できませんでした。HTTP ' + image.status);
+    return { kind: 'data', name, mode: 'snapshot',
+      template: new Uint8Array(await image.arrayBuffer()) };
+  }
+  const [alpine, disk] = await Promise.all([
+    fetch('./alpine.erofs'),
+    loadDisk('./node-red.kwsparse.gz', 'node-red-aarch64-data'),
+  ]);
+  if (!alpine.ok) throw new Error('Alpine を取得できませんでした。HTTP ' + alpine.status);
+  const distro = { kind: 'http', url: URL.createObjectURL(await alpine.blob()) };
   status.textContent = 'Alpine と Node-RED を起動しています…';
   const decoder = new TextDecoder();
   let output = '';
   vm = await createKernel({
-    disks: [disk], memoryMiB: 768, worker: true, shared: false,
+    distro, disks: [disk], memoryMiB: 768, worker: true, shared: false, cpus: 1, net,
     onOutput(bytes) {
       output = (output + decoder.decode(bytes, { stream: true })).slice(-4000);
     },
@@ -52,7 +71,7 @@ async function boot() {
       reject(new Error(result.kind + ' ' + output.slice(-700)));
     });
   });
-  vm.write('sh /data/start-guest\n');
+  vm.write(net ? 'npm_config_offline=false sh /data/start-guest\n' : 'sh /data/start-guest\n');
   await ready;
   const channel = new MessageChannel();
   const registered = new Promise(resolve => { channel.port1.onmessage = resolve; });

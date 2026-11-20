@@ -1,42 +1,67 @@
 #!/usr/bin/env node
 import { KernelInstance, NetStack, bundledBoot, createKernelOn, decodeSnapshot, domCodeToLinux, encodeSnapshot, frameToPpm, moduleIsMemory64, smpKernelFromBundle } from "./_chunks/core.mjs";
-import { cliSound, createImageFromKwsparse, directBackend, nodeFs, nodePlatform, openDisk, wispBackend } from "./_chunks/node.mjs";
+import { cliSound, createImageFromKwsparse, directBackend, distroFetcher, isCheckout, nodeFs, nodePlatform, openDisk, serveWasiPrograms, wispBackend } from "./_chunks/node.mjs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-const bundledKernelUrl = new URL("./unkernel-alpine.wasm", import.meta.url);
-const USAGE = `Usage: unkernel [kernel.wasm | --kernel kernel.wasm] [--initrd alpine|none|NAME|file.cpio[.gz]]
-       [--mem MiB] [--append "cmdline"] [--timeout seconds] [--input "text"] [--input-delay seconds]
-       [--size COLSxROWS] [--stats] [--disk image.ext4|URL]... [--snapshot]
+const bundledKernelUrl = new URL("./unkernel.wasm", import.meta.url);
+const fetchDistro = distroFetcher(new URL("..", import.meta.url));
+const USAGE = `Usage: unkernel [kernel.wasm | --kernel kernel.wasm] [--distro alpine|debian|none|FILE|URL]
+       [--initrd none|NAME|file.cpio[.gz]] [--append "cmdline"]
+       [--mem MiB] [--timeout seconds] [--input "text"] [--input-delay seconds]
+       [--size COLSxROWS] [--stats]
+       [--disk image.ext4[:ro]|URL[:ro]]... [--snapshot]
        [--data FILE [--data-template FILE.kwsparse.gz]]
        [--no-net | --net-wisp URL] [--net-mtu N] [--no-jit] [--display[=WxH[@DPI]]]
-       [--sound | --sound-wav FILE] [--no-vsock] [--shm] [--worker[=shared|messages]] [--smp N]
-       [--mount HOSTDIR:GUESTPATH[:ro]]... [--forward HOSTPORT:GUESTPORT]...
+       [--sound | --sound-wav FILE] [--no-vsock] [--shm] [--worker[=shared|messages]] [--cpus N]
+       [--mount HOSTDIR:GUESTPATH[:ro]]... [--forward HOSTPORT:GUESTPORT]... [--wasi]
        [--restore FILE]
 
-With no arguments it boots Alpine from the bundled kernel (unkernel-alpine.wasm:
-vmlinux32.wasm with the root fs and command line in custom sections), interactive
-on this terminal; Ctrl-] quits. In a source checkout, any other --initrd (a NAME
-from vendor/build/initramfs/, or a path) loads vendor/build/kernel/vmlinux32.wasm
-plus that file. The kwtest smoke test is in a local build's Alpine (not in
-releases): --append "console=hvc0 rdinit=/usr/bin/kwtest" (exit 0, or 1 on a
-failure); with a release bundle add --initrd alpine-test.
+With no arguments it boots Alpine on the bundled kernel, interactive on this
+terminal; Ctrl-] quits. The bundled kernel (unkernel.wasm: vmlinux32.wasm with
+a small base initramfs, its command line, the data disk template and the patch
+to the SMP kernel in custom sections) mounts a distro image read-only under an
+overlay root and runs its /sbin/init; the root's changes go to the data disk's
+/data/distros/NAME/ with --data, else to memory. Without a distro it starts the
+base shell (busybox and the kw tools).
 
---kernel (or a positional path) replaces the kernel: either build, or a bundle;
-the memory type is detected from the module. A kernel with a bundled root fs
-boots it unless --initrd is given. The wasm64 reference build is
---kernel vendor/build/kernel/vmlinux.
+--distro picks the distro image: alpine (the default) or debian, none (the
+base shell), an image FILE, or an http(s) URL served with Range support. An
+image is an erofs or ext4 file system labelled kwroot, attached read-only as
+/dev/wda, before any --disk and --data, and never written. A NAME is, in a
+source checkout, vendor/build/distro/NAME.erofs (or NAME.ext4 when there is no
+.erofs or the kernel has no erofs; kernel/build.sh distro NAME builds them);
+in an installed package it is downloaded on first use from the GitHub release
+of the package's version (checked against its distros.json) and kept in
+~/.cache/unkernel ($XDG_CACHE_HOME/unkernel; UNKERNEL_CACHE_DIR overrides it,
+UNKERNEL_RELEASE_URL the release). With --initrd, --append or --disk there is
+no default distro (add --distro to have one), and --restore uses the image the
+snapshot names.
+
+--kernel (or a positional path) replaces the kernel: a bundle, or a plain build
+(vendor/build/kernel/vmlinux32.wasm, or the wasm64 reference build
+vendor/build/kernel/vmlinux), which boots the base initramfs from
+vendor/build/initramfs/base.cpio of a source checkout unless --initrd is given;
+the memory type is detected from the module. --initrd replaces the initramfs:
+a file, none, or a NAME from vendor/build/initramfs/ (base, base-test); the
+bundle's command line is then not used ("console=hvc0 rdinit=/init" unless
+--append is given). The kernel tests (kwtest, abitest, kwbench) are in a source
+checkout's bundle, and always in base-test.cpio:
+--initrd base-test --append "console=hvc0 rdinit=/usr/bin/kwtest" (exit 0, or 1
+on a failure).
 
 --disk attaches a kwblk disk (/dev/wda, then wdb, ...; repeatable): a disk image
-file (read and written in place), or an http(s) URL served with Range support.
-With a disk and no --initrd/--append, it boots "root=/dev/wda rw" without an
-initramfs. --snapshot keeps writes to file images in memory (discarded at exit).
+file (read and written in place), or an http(s) URL served with Range support
+(writes kept in memory). A :ro suffix attaches it read-only (the guest's writes
+fail). With a disk and no --distro, --initrd or --append, it boots
+"root=/dev/wda rw" without an initramfs (an ext4 root file system of your own).
+--snapshot keeps writes to file images in memory (discarded at exit).
 
 --data FILE attaches the persistent data disk (the ext4 file system labelled
-kwdata that the page keeps in IndexedDB; Alpine mounts it at /data) after the
---disk disks: wda without --disk. If FILE does not exist it is created (sparse,
-4 GiB) from the data disk template: --data-template, else the kernel's bundled
+kwdata that the page keeps in IndexedDB; the base mounts it at /data) after the
+--distro and --disk disks: wda without them. If FILE does not exist it is
+created (sparse, 4 GiB) from the data disk template: --data-template, else the kernel's bundled
 one (custom section unkernel.datadisk), else vendor/build/disk/kwdata.kwsparse.gz
 (kernel/build.sh datadisk). An existing FILE is used in place, like --disk
 (--snapshot applies too).
@@ -47,9 +72,10 @@ disables it, --net-mtu N sets the MTU handed out by DHCP. The guest is
 sends the guest's TCP through a Wisp server instead (handshake with
 Origin: http://localhost, which wss://wisp.pi0.io:6680/ requires).
 
-kwemu's JIT tier (hot riscv64 code compiled to WebAssembly) is on by default;
---no-jit runs the interpreter only. --stats prints its counters at exit, and
-kwemu's own (exits, compiled share) from a kernel built by kernel/build.sh stats.
+kwemu's JIT tier (hot guest code compiled to WebAssembly) is offered by default;
+--no-jit runs the interpreter only (a kernel built without the JIT never
+asks, and --stats then says "not in this kernel"). --stats prints the JIT counters at exit, and kwemu's own (exits, compiled share) from a
+kernel built by kernel/build.sh stats.
 
 --worker runs the kernel in a worker thread (createKernel({ worker: true })),
 with the disks and the network built there from specs; the display, the input
@@ -59,7 +85,7 @@ through shared memory (read by the worker while the kernel runs);
 yields, up to 20 ms while the guest is busy), --worker=shared insists on
 shared memory. PCM and everything else are messages either way.
 
---smp N gives an SMP kernel (one built with CONFIG_SMP: kw_smp.config)
+--cpus N gives an SMP kernel (one built with CONFIG_SMP: kw_smp.config)
 N CPUs, each another instance of the kernel in its own thread on a shared
 memory, each with its own JIT; it implies --worker, and --stats prints the
 JIT counters per CPU. A UP kernel runs on one CPU (a log line says so). An SMP kernel has every device
@@ -106,6 +132,14 @@ SDK's vm.connect()), not the network, so it works with --no-net too, and it
 needs vsock. Half-closes pass through; a refused guest port resets the host
 connection.
 
+--wasi (prototype) runs the guest's WASI programs (wasm32-wasi .wasm files,
+preview 1 or 0, executable, run by path) on this host's wasm engine, each in
+a worker thread of its own: the guest's binfmt_misc hands them to
+/usr/bin/kwwasi, which talks to the host over vsock port 1021 and does the
+program's file I/O in the guest, as that process; killing kwwasi ends the
+program. It needs vsock, and kwwasi registered in the guest (the kw layer's
+/usr/lib/kw/rc does it at boot, also in the base shell).
+
 --shm gives the guest kwshm (/dev/kwshm: guest programs export shmem files to
 the host, which reads and writes their pages in place; the SDK's vm.shm). The
 CLI itself opens nothing; it is there for kwtest's checks. Without it there is
@@ -129,8 +163,10 @@ when it was saved), with or without --worker. --mount directories survive
 --mount options again (a file deleted meanwhile gives "Stale file handle").
 Other vsock sessions (--forward connections) and the guest's TCP connections
 do not survive a restore: the guest's ends are reset. Disks are not copied: pass the
-same --disk and --data images, unchanged. A restore refuses a disk
-that was written after the snapshot (by the guest running on after {save}, a
+same --disk and --data images, unchanged; the distro image is the one the
+snapshot names unless --distro is given (it is identified by its content, and a
+file also by its size and mtime). A restore
+refuses a disk that was written after the snapshot (by the guest running on after {save}, a
 later boot, or another program), and the first write after a restore makes the
 snapshot unrestorable. A writable image FILE gets a FILE.kwsnap with its write
 generation when a snapshot first includes it.
@@ -154,17 +190,31 @@ const opt = (name, def) => {
 const flag = (name) => args.includes(`--${name}`);
 const positional = args[0] && !args[0].startsWith("--") ? args[0] : void 0;
 const diskSpecs = args.flatMap((a, i) => a === "--disk" ? [args[i + 1]] : []);
-const initrdOpt = opt("initrd", diskSpecs.length ? "none" : "alpine");
+const initrdArg = opt("initrd");
+const appendArg = opt("append");
+const restorePath = opt("restore");
+let restore;
+if (restorePath) try {
+	restore = decodeSnapshot(new Uint8Array(readFileSync(restorePath)));
+} catch (e) {
+	process.stderr.write(`[host] cannot load the snapshot ${path.relative(process.cwd(), restorePath) || restorePath}: ${e.message}\n`);
+	process.exit(1);
+}
+const distroArg = opt("distro");
+const snapDistro = restore?.disks[0]?.identity.startsWith("distro ") ? restore.disks[0].name : void 0;
+const distroOpt = distroArg === "none" ? void 0 : distroArg ?? (restore ? snapDistro : initrdArg !== void 0 || appendArg !== void 0 || diskSpecs.length ? void 0 : "alpine");
+const diskBoot = diskSpecs.length > 0 && !distroOpt;
+const initrdOpt = initrdArg ?? (diskBoot ? "none" : "bundled");
 const kernelOpt = positional ?? opt("kernel");
-const kernelPath = kernelOpt ?? (initrdOpt === "alpine" ? fileURLToPath(bundledKernelUrl) : path.join(root, "vendor/build/kernel/vmlinux32.wasm"));
+const kernelPath = kernelOpt ?? fileURLToPath(bundledKernelUrl);
 const memoryMiB = Number(opt("mem", "512"));
 const timeout = Number(opt("timeout", "0"));
 const scripted = opt("input");
 const rel = (p) => path.relative(process.cwd(), p) || p;
 const workerArg = args.find((a) => a === "--worker" || a.startsWith("--worker="));
-const smpCpus = Number(opt("smp", "1"));
+const smpCpus = Number(opt("cpus", "1"));
 if (!Number.isInteger(smpCpus) || smpCpus < 1 || smpCpus > 32) {
-	process.stderr.write("[host] --smp N: 1 to 32 CPUs\n");
+	process.stderr.write("[host] --cpus N: 1 to 32 CPUs\n");
 	process.exit(1);
 }
 const worker = !!workerArg || smpCpus > 1;
@@ -175,6 +225,7 @@ if (workerTransport && workerTransport !== "shared" && workerTransport !== "mess
 }
 const t0 = performance.now();
 let module;
+let kernelHasErofs = false;
 try {
 	let bytes = readFileSync(kernelPath);
 	if (smpCpus > 1) {
@@ -186,39 +237,100 @@ try {
 		}
 	}
 	module = await WebAssembly.compile(bytes);
+	kernelHasErofs = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).includes("cannot find valid erofs superblock");
 } catch (e) {
 	const err = e;
-	const hint = err.code === "ENOENT" && !kernelOpt ? initrdOpt === "alpine" ? " (build it with kernel/build.sh bundle)" : " (build it with kernel/build.sh kernel)" : "";
+	const hint = err.code === "ENOENT" && !kernelOpt ? " (build it with kernel/build.sh base, or pass --kernel)" : "";
 	process.stderr.write(`[host] cannot load the kernel ${rel(kernelPath)}: ${err.message}${hint}\n`);
 	process.exit(1);
 }
 const tCompile = performance.now() - t0;
 const bundled = bundledBoot(module);
-const useBundle = !!bundled.initrd && (opt("initrd") === void 0 || !kernelOpt && initrdOpt === "alpine");
-const initrdPath = useBundle ? "bundled" : initrdOpt === "none" || /[/.]/.test(initrdOpt) ? initrdOpt : path.join(root, "vendor/build/initramfs", `${initrdOpt}.cpio`);
-const cmdline = opt("append", useBundle && bundled.cmdline ? bundled.cmdline : diskSpecs.length && initrdPath === "none" ? "console=hvc0 root=/dev/wda rw" : "console=hvc0 rdinit=/init");
+const useBundle = initrdOpt === "bundled" && !!bundled.initrd;
+if (initrdOpt === "bundled" && !useBundle && !existsSync(path.join(root, "vendor/build/initramfs/base.cpio"))) {
+	process.stderr.write(`[host] the kernel ${rel(kernelPath)} has no bundled initramfs: pass --initrd FILE (or none)\n`);
+	process.exit(1);
+}
+const initrdName = initrdOpt === "bundled" ? "base" : initrdOpt;
+const initrdPath = useBundle ? "bundled" : initrdName === "none" || /[/.]/.test(initrdName) ? initrdName : path.join(root, "vendor/build/initramfs", `${initrdName}.cpio`);
+const cmdline = appendArg ?? (useBundle && bundled.cmdline ? bundled.cmdline : (diskSpecs.length || distroOpt) && initrdPath === "none" ? `console=hvc0 root=/dev/wda ${distroOpt ? "ro" : "rw"}` : "console=hvc0 rdinit=/init");
 let initrd;
 try {
 	initrd = useBundle ? void 0 : initrdPath === "none" ? null : new Uint8Array(readFileSync(initrdPath));
 } catch (e) {
-	process.stderr.write(`[host] cannot load the initrd ${rel(initrdPath)}: ${e.message}\n`);
+	const hint = /[/.]/.test(initrdName) ? "" : isCheckout(root) ? ` (kernel/build.sh base builds base.cpio and base-test.cpio)` : ` (a NAME is a file of a source checkout's vendor/build/initramfs/; pass a path)`;
+	process.stderr.write(`[host] cannot load the initrd ${rel(initrdPath)}: ${e.message}${hint}\n`);
 	process.exit(1);
 }
-process.stderr.write(`[host] kernel ${rel(kernelPath)}, initrd ${useBundle ? "bundled" : initrdPath === "none" ? "none" : rel(initrdPath)}\n`);
+let progressOpen = false;
+let distro;
+if (distroOpt) {
+	const how = distroArg === void 0 ? "the default distro, alpine" : `--distro ${distroOpt}`;
+	if (/^https?:\/\//.test(distroOpt)) distro = distroOpt;
+	else if (/^[a-z0-9]+$/.test(distroOpt) && !existsSync(distroOpt)) {
+		const at = (ext) => path.join(root, "vendor/build/distro", `${distroOpt}.${ext}`);
+		const found = (kernelHasErofs ? ["erofs", "ext4"] : ["ext4", "erofs"]).map(at).filter((f) => existsSync(f));
+		const none = `; --distro FILE boots an image file${distroArg === void 0 ? ", --distro none the base shell without a distro" : ""}`;
+		if (found.length) {
+			distro = found[0];
+			if (!kernelHasErofs && distro.endsWith(".erofs")) process.stderr.write(`[host] ${how}: the kernel ${rel(kernelPath)} seems to have no erofs, and there is no ${rel(at("ext4"))}\n`);
+		} else if (isCheckout(root)) {
+			process.stderr.write(`[host] ${how}: no image ${rel(at("erofs"))}: build it with kernel/build.sh distro ${distroOpt}, or pass an image file or URL${none}\n`);
+			process.exit(1);
+		} else try {
+			distro = await fetchDistro(distroOpt, { onProgress: downloadProgress() });
+		} catch (e) {
+			process.stderr.write(`${progressOpen ? "\n" : ""}[host] ${how}: ${e.message}${none}\n`);
+			process.exit(1);
+		}
+	} else if (!existsSync(distroOpt)) {
+		process.stderr.write(`[host] --distro: no file ${distroOpt}\n`);
+		process.exit(1);
+	} else distro = distroOpt;
+}
+function downloadProgress() {
+	const tty = process.stderr.isTTY;
+	let shown = -1, started = false;
+	return (p) => {
+		if (p.stage === "download" && p.total) {
+			const pct = Math.floor(100 * (p.loaded ?? 0) / p.total);
+			if (!started) {
+				started = true;
+				process.stderr.write(`[host] downloading ${p.file} (${(p.total / 1048576).toFixed(1)} MiB) from ${p.url} to ${p.path}\n`);
+			}
+			if (tty && pct !== shown) {
+				shown = pct;
+				progressOpen = true;
+				process.stderr.write(`\r\x1b[K[host] ${p.file}: ${pct}%`);
+			}
+		} else if (p.stage === "done" && started) {
+			process.stderr.write(`${tty ? "\r\x1B[K" : ""}[host] ${p.file}: downloaded and verified\n`);
+			progressOpen = false;
+		}
+	};
+}
+process.stderr.write(`[host] kernel ${rel(kernelPath)}, initrd ${useBundle ? "bundled" : initrdPath === "none" ? "none" : rel(initrdPath)}${distro ? `, distro ${/^https?:/.test(distro) ? distro : rel(distro)}` : ""}\n`);
 const disks = [];
 const diskSpecsOut = [];
-const addDisk = async (spec) => {
-	if (!worker) disks.push(await openDisk(spec, { snapshot: flag("snapshot") }));
+const addDisk = async (arg) => {
+	const ro = arg.endsWith(":ro") && !existsSync(arg);
+	const spec = ro ? arg.slice(0, -3) : arg;
+	if (!worker) disks.push(await openDisk(spec, {
+		snapshot: flag("snapshot"),
+		readOnly: ro
+	}));
 	else diskSpecsOut.push(/^https?:\/\//.test(spec) ? {
 		kind: "http",
-		url: spec
+		url: spec,
+		readOnly: ro
 	} : {
 		kind: "file",
 		path: spec,
-		snapshot: flag("snapshot")
+		snapshot: flag("snapshot"),
+		readOnly: ro
 	});
 };
-const diskCount = () => disks.length + diskSpecsOut.length;
+const diskCount = () => (distro ? 1 : 0) + disks.length + diskSpecsOut.length;
 for (const spec of diskSpecs) await addDisk(spec);
 const dataPath = opt("data");
 if (dataPath) {
@@ -253,17 +365,7 @@ const net = !useNet || worker ? void 0 : new NetStack({
 	mtu: mtu ? Number(mtu) : void 0,
 	log
 });
-const restorePath = opt("restore");
-let restore;
-if (restorePath) {
-	try {
-		restore = decodeSnapshot(new Uint8Array(readFileSync(restorePath)));
-	} catch (e) {
-		process.stderr.write(`[host] cannot load the snapshot ${rel(restorePath)}: ${e.message}\n`);
-		process.exit(1);
-	}
-	process.stderr.write(`[host] restoring ${rel(restorePath)} (${restore.memory.byteLength / 1048576} MiB)\n`);
-}
+if (restorePath && restore) process.stderr.write(`[host] restoring ${rel(restorePath)} (${restore.memory.byteLength / 1048576} MiB)\n`);
 const sizeOpt = opt("size")?.match(/^(\d+)x(\d+)$/);
 const consoleSize = sizeOpt ? {
 	cols: Number(sizeOpt[1]),
@@ -318,6 +420,10 @@ for (const [i, a] of args.entries()) {
 		host,
 		guest
 	});
+}
+if (flag("wasi") && flag("no-vsock")) {
+	process.stderr.write("[host] --wasi needs vsock (kwwasi connects over it); drop --no-vsock\n");
+	process.exit(1);
 }
 if (forwards.length && flag("no-vsock")) {
 	process.stderr.write("[host] --forward needs vsock (kwtty connects in the guest); drop --no-vsock\n");
@@ -398,7 +504,8 @@ try {
 		vsock: !flag("no-vsock"),
 		shm: flag("shm"),
 		mounts,
-		restore
+		restore,
+		distro
 	};
 	vm = worker ? await createKernelOn(nodePlatform(bundledKernelUrl), {
 		...common,
@@ -413,6 +520,8 @@ try {
 		net
 	});
 	if (worker) log(`[host] kernel worker: input and frames by ${vm.transport === "shared" ? "shared memory" : "messages"}`);
+	if (vm.distro) log(`[host] distro: ${/^https?:/.test(vm.distro.name) ? vm.distro.name : rel(vm.distro.name)} is /dev/wda (${vm.distro.fs}, label ${vm.distro.label}, ${(vm.distro.size / 1048576).toFixed(1)} MiB, read-only)`);
+	if (flag("wasi")) serveWasiPrograms(vm.vsock, { log });
 	vmReady(vm);
 } catch (e) {
 	process.stderr.write(`[host] boot failed: ${e.stack ?? e}\n`);
@@ -508,11 +617,11 @@ async function dumpFrame(file) {
 	process.stderr.write(`\n[host] fb: wrote ${file} (${f.width}x${f.height})\n`);
 }
 function printKwemuStats(k) {
-	const base = k.words.length - 64, ic = Math.max(k.icount, 1);
+	const base = 437, ic = Math.max(k.icount, 1);
 	const w = (i) => k.words[i] ?? 0, jx = (i) => w(base + i);
 	process.stderr.write(`[kwemu] instret=${k.icount} compiled insns=${(w(203) * 100 / ic).toFixed(2)}% handbacks=${w(204)}\n`);
 	process.stderr.write(`[kwemu-exits] entries=${jx(0)} handbacks=${jx(1)} side=${jx(2)} (region ${jx(25)}) direct=${jx(3)} jalr=${jx(4)} stop=${jx(24)}\n`);
-	process.stderr.write(`[kwemu-jx] ${k.words.slice(base).join(" ")}\n`);
+	process.stderr.write(`[kwemu-jx] ${k.words.slice(base, 501).join(" ")}\n`);
 	process.stderr.write(`[kwemu-stats] lookups_slow=${w(0)} revalidated=${w(1)} decoded=${w(2)} resets=${w(3)} blocks=${w(4)} insns/block=${(w(5) / Math.max(w(4), 1)).toFixed(2)} single_steps=${w(6)} walks r/w/x=${w(7)}/${w(8)}/${w(9)} generic=${w(10)}\n`);
 }
 function finish(res) {
