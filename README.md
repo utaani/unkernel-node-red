@@ -21,8 +21,21 @@
 ## 仕組み
 
 - Web Worker で unkernel を起動し、圧縮した ext4 イメージから Node-RED 5.0.10 と Node.js 24.22.3 を読み込みます。
-- Service Worker が同じページ内のエディターからの HTTP リクエストをゲストに渡します。ライブ通知は、ゲスト内の WebSocket から HTTP ポーリングでエディターに届けます。
+- 起動ページがゲストの Web Worker を保持し、Node-RED のエディターは同じページ内の iframe で開きます。これにより、ゲストを動かしている親ページを開いたまま、エディターに専用の URL を持たせられます。エディターはその URL を基準に、JavaScript、CSS、フロー API を相対パスで読み込みます。
+- Service Worker は `editor/<セッションID>/` 以下の HTTP リクエストを起動元のタブへ渡し、親ページが unkernel の `vm.fetch()` でゲストの Node-RED に届けます。ライブ通知は、ゲスト内の WebSocket から HTTP ポーリングでエディターに届けます。
 - このリポジトリのルートは静的サイトの配信物です。ローカルで試す場合は、チェックアウトしたディレクトリで `python3 -m http.server 18883 --bind 127.0.0.1` を実行し、`http://127.0.0.1:18883/` を開きます。GitHub Pages では HTTPS で配信しています。
+
+### HTTP In ノードを試す
+
+ゲスト内の `http://localhost:1880/api/test` は、そのゲストで動く Node-RED を指します。エディターと同じブラウザからは、エディターの URL を基準にした `api/test` を呼ぶと、同じ Service Worker 経由で HTTP In ノードに届きます。たとえば `GET /test` をデプロイした後、デモのトップページの開発者コンソールで次を実行できます。
+
+```js
+const editor = document.querySelector('iframe');
+const response = await fetch(new URL('api/test', editor.src));
+console.log(response.status, await response.text());
+```
+
+GitHub Pages のプロジェクト URL 直下にある `/api/test` は静的配信先へのリクエストになります。別端末や外部サービスから Webhook として呼ぶには、外部のリクエストを受け付ける実行環境が必要です。
 
 ## 保証について
 
