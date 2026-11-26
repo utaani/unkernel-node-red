@@ -90,10 +90,19 @@ async function boot() {
   document.body.append(editor);
   enableTerminal(vm, localize);
 
+  const openDashboard = document.querySelector('#open-dashboard');
+  openDashboard.disabled = false;
+  openDashboard.addEventListener('click', () => {
+    window.open(new URL('api/dashboard/', editor.src).href, '_blank', 'noopener');
+  });
+
   const reloadEditor = document.querySelector('#reload-editor');
   reloadEditor.disabled = false;
   reloadEditor.addEventListener('click', () => editor.contentWindow.location.reload());
-  vm.exited.then(() => { reloadEditor.disabled = true; });
+  vm.exited.then(() => {
+    openDashboard.disabled = true;
+    reloadEditor.disabled = true;
+  });
 }
 
 boot().catch(error => {
