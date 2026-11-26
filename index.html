@@ -3,17 +3,41 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Node-RED on unkernel</title>
+<link rel="stylesheet" href="./terminal/xterm.css">
 <style>
 body { margin: 0; font: 16px system-ui; color: #202124; background: #fafafa }
-header { padding: 12px 18px; border-bottom: 1px solid #ccc }
+header { min-height: 49px; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 18px; border-bottom: 1px solid #ccc }
+#editor-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px }
 iframe { display: block; width: 100%; height: calc(100dvh - 50px); border: 0 }
+#terminal-dialog { box-sizing: border-box; width: min(900px, 94vw); height: min(520px, 86dvh); padding: 0; border: 1px solid #666; color: #fff; background: #151515 }
+#terminal-dialog::backdrop { background: #0006 }
+#terminal-dialog[open] { display: flex; flex-direction: column }
+#terminal-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px }
+#terminal-screen { flex: 1; min-height: 0; padding: 0 12px 10px }
 </style>
-<header id="status" role="status">Starting Node-RED…</header>
+<header>
+  <span id="status" role="status">Starting Node-RED…</span>
+  <div id="editor-actions">
+    <button id="reload-editor" type="button" disabled>Reload editor</button>
+    <button id="open-terminal" type="button" aria-haspopup="dialog" disabled>Terminal</button>
+  </div>
+</header>
+<dialog id="terminal-dialog" aria-labelledby="terminal-title">
+  <div id="terminal-toolbar">
+    <strong id="terminal-title">Guest terminal</strong>
+    <form method="dialog"><button id="close-terminal">Close</button></form>
+  </div>
+  <div id="terminal-screen"></div>
+</dialog>
 <script>
 if (/^ja(?:-|$)/i.test(navigator.language)) {
   document.documentElement.lang = 'ja';
   document.querySelector('#status').textContent = 'Node-RED を起動しています…';
+  document.querySelector('#reload-editor').textContent = 'エディターを再読み込み';
+  document.querySelector('#open-terminal').textContent = 'ターミナル';
+  document.querySelector('#terminal-title').textContent = 'ゲストのターミナル';
+  document.querySelector('#close-terminal').textContent = '閉じる';
 }
 </script>
-<script type="module" src="./boot.js?v=2"></script>
+<script type="module" src="./boot.js?v=5"></script>
 </html>

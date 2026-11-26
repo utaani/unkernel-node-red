@@ -1,4 +1,5 @@
 import { createKernel } from './sdk/web.mjs';
+import { enableTerminal } from './terminal/session.js';
 
 const status = document.querySelector('#status');
 const japanese = /^ja(?:-|$)/i.test(navigator.language);
@@ -87,6 +88,12 @@ async function boot() {
   editor.src = './editor/' + instance + '/';
   status.textContent = 'Node-RED';
   document.body.append(editor);
+  enableTerminal(vm, localize);
+
+  const reloadEditor = document.querySelector('#reload-editor');
+  reloadEditor.disabled = false;
+  reloadEditor.addEventListener('click', () => editor.contentWindow.location.reload());
+  vm.exited.then(() => { reloadEditor.disabled = true; });
 }
 
 boot().catch(error => {
