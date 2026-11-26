@@ -7,7 +7,7 @@
 ## 試し方
 
 1. WebAssembly JSPI に対応するブラウザでデモを開きます。Chromium 156 で動作を確認しています。
-2. 起動が終わると、空の「フロー 1」が表示されます。初回の配信量は約 63.6 MiB で、起動は約 1〜2 分でした。
+2. 起動が終わると、空の「フロー 1」が表示されます。初回の配信量は約 67.6 MiB で、起動は約 1〜2 分でした。
 3. たとえば Inject ノードと Debug ノードをつなぎ、デプロイしてから Inject のボタンを押すと、Debug 欄にメッセージが出ます。
 
 編集内容はそのタブの試用環境に保存されます。ページを再読み込みすると初期状態に戻るので、残したいフローは Node-RED のメニューから JSON にエクスポートしてください。
@@ -20,7 +20,7 @@
 
 ## 仕組み
 
-- Web Worker で unkernel `v0.2.0-261119-97d7945` を起動し、`alpine.erofs` を Alpine のルートに使います。圧縮した ext4 イメージから Node-RED 5.0.10 と Node.js 24.22.3 を読み込みます。
+- Web Worker で unkernel `v0.2.0-261126-fd204d3` を起動し、`alpine.erofs` を Alpine のルートに使います。圧縮した ext4 イメージから Node-RED 5.0.10 と Node.js 24.22.3 を読み込みます。
 - 起動ページがゲストの Web Worker を保持し、Node-RED のエディターは同じページ内の iframe で開きます。これにより、ゲストを動かしている親ページを開いたまま、エディターに専用の URL を持たせられます。エディターはその URL を基準に、JavaScript、CSS、フロー API を相対パスで読み込みます。
 - Service Worker は `editor/<セッションID>/` 以下の HTTP リクエストを起動元のタブへ渡し、親ページが unkernel の `vm.fetch()` でゲストの Node-RED に届けます。ライブ通知は、ゲスト内の WebSocket から HTTP ポーリングでエディターに届けます。
 - このリポジトリのルートは静的サイトの配信物です。ローカルで試す場合は、チェックアウトしたディレクトリで `python3 -m http.server 18883 --bind 127.0.0.1` を実行し、`http://127.0.0.1:18883/` を開きます。GitHub Pages では HTTPS で配信しています。
@@ -53,9 +53,9 @@ GitHub Pages のプロジェクト URL 直下にある `/api/test` は静的配�
 
 | 配布物 | ライセンスと上流 |
 | --- | --- |
-| `sdk/` の unkernel JavaScript SDK | MIT。[unkernel の MIT ライセンス](https://github.com/pithings/unkernel/blob/97d7945/LICENSE-MIT) |
-| `sdk/unkernel.wasm` | unkernel の Linux カーネル部分は GPL-2.0-only。[unkernel の GPL ライセンス](https://github.com/pithings/unkernel/blob/97d7945/LICENSE)・[使用版の上流コミット](https://github.com/pithings/unkernel/tree/97d7945) |
-| `alpine.erofs` | AArch64 版の Alpine ユーザーランド。[上流の配布物](https://github.com/pithings/unkernel/releases/tag/v0.2.0-261119-97d7945) |
+| `sdk/` の unkernel JavaScript SDK | MIT。[unkernel の MIT ライセンス](https://github.com/pithings/unkernel/blob/fd204d3/LICENSE-MIT) |
+| `sdk/unkernel.wasm` | unkernel の Linux カーネル部分は GPL-2.0-only。[unkernel の GPL ライセンス](https://github.com/pithings/unkernel/blob/fd204d3/LICENSE)・[使用版の上流コミット](https://github.com/pithings/unkernel/tree/fd204d3) |
+| `alpine.erofs` | AArch64 版の Alpine ユーザーランド。[上流の配布物](https://github.com/pithings/unkernel/releases/tag/v0.2.0-261126-fd204d3) |
 | `node-red.kwsparse.gz` | [Node-RED（Apache-2.0）](https://github.com/node-red/node-red/blob/main/LICENSE)、[Node.js と同梱コンポーネント](https://github.com/nodejs/node/blob/v24.22.3/LICENSE)、Alpine のライブラリ、npm 依存パッケージを収録 |
 
 配布物に含まれる第三者ソフトウェアのライセンス文書・著作権表示・NOTICE、および GPL 対象バイナリの対応ソースの提供方法は確認中です。表の上流リンクは使用したソフトウェアの参照先です。

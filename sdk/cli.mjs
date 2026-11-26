@@ -1,19 +1,20 @@
 #!/usr/bin/env node
-import { KernelInstance, NetStack, bundledBoot, createKernelOn, decodeSnapshot, domCodeToLinux, encodeSnapshot, frameToPpm, moduleIsMemory64, smpKernelFromBundle } from "./_chunks/core.mjs";
-import { cliSound, createImageFromKwsparse, directBackend, distroFetcher, isCheckout, nodeFs, nodePlatform, openDisk, serveWasiPrograms, wispBackend } from "./_chunks/node.mjs";
+import * as nodeModule from "node:module";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
+nodeModule.enableCompileCache?.();
+const { BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, KernelInstance, NetStack, bundledBoot, cliSound, createImageFromKwsparse, createKernelOn, decodeSnapshot, directBackend, distroFetcher, domCodeToLinux, encodeSnapshot, formatProfile, frameToPpm, isCheckout, moduleIsMemory64, nodeFs, nodePlatform, openDisk, serveWasiPrograms, smpKernelFromBundle, symbolizeProfile, wispBackend } = await import("./_chunks/cli-imports.mjs");
 const bundledKernelUrl = new URL("./unkernel.wasm", import.meta.url);
 const fetchDistro = distroFetcher(new URL("..", import.meta.url));
 const USAGE = `Usage: unkernel [kernel.wasm | --kernel kernel.wasm] [--distro alpine|debian|none|FILE|URL]
-       [--initrd none|NAME|file.cpio[.gz]] [--append "cmdline"]
+       [--initrd none|NAME|file.cpio[.gz]] [--append "cmdline"] [--user NAME]
        [--mem MiB] [--timeout seconds] [--input "text"] [--input-delay seconds]
-       [--size COLSxROWS] [--stats]
+       [--size COLSxROWS] [--stats] [--profile FILE [--profile-hz N] [--profile-insns N] [--profile-root DIR]]
        [--disk image.ext4[:ro]|URL[:ro]]... [--snapshot]
        [--data FILE [--data-template FILE.kwsparse.gz]]
-       [--no-net | --net-wisp URL] [--net-mtu N] [--no-jit] [--display[=WxH[@DPI]]]
+       [--no-net | --net-wisp URL] [--net-mtu N] [--no-jit] [--display[=WxH[@DPI]]] [--gpu]
        [--sound | --sound-wav FILE] [--no-vsock] [--shm] [--worker[=shared|messages]] [--cpus N]
        [--mount HOSTDIR:GUESTPATH[:ro]]... [--forward HOSTPORT:GUESTPORT]... [--wasi]
        [--restore FILE]
@@ -38,6 +39,11 @@ of the package's version (checked against its distros.json) and kept in
 UNKERNEL_RELEASE_URL the release). With --initrd, --append or --disk there is
 no default distro (add --distro to have one), and --restore uses the image the
 snapshot names.
+
+The distro images' console and the SDK's sessions run as the user "user" (uid
+1000, home /home/user), who has sudo without a password; --user NAME makes the
+console NAME's (root: --user root), appending kw.user=NAME to the command line.
+The base shell is root's.
 
 --kernel (or a positional path) replaces the kernel: a bundle, or a plain build
 (vendor/build/kernel/vmlinux32.wasm, or the wasm64 reference build
@@ -77,19 +83,32 @@ kwemu's JIT tier (hot guest code compiled to WebAssembly) is offered by default;
 asks, and --stats then says "not in this kernel"). --stats prints the JIT counters at exit, and kwemu's own (exits, compiled share) from a
 kernel built by kernel/build.sh stats.
 
+--profile FILE samples where guest user time goes and writes a JSON histogram
+to FILE at exit (time samples, instruction samples, the block that ran before
+a time sample and the kwemu tier that saw it; by file and file offset over
+all processes, per 4 KiB page of a file time against instructions, and per
+command, process and user pc), with a short table on stderr. Time samples
+(--profile-hz N per CPU, default 1000) need the SMP kernel's shared memory,
+so --cpus 2 or more; without it there are instruction samples only (one
+every --profile-insns N user instructions of a CPU, default 1000000; 0 turns
+either off). --profile-root DIR names the code with ELF symbols, reading
+the guest's files from a host copy of its root (for example
+vendor/build/distro/debian-root).
+
 --worker runs the kernel in a worker thread (createKernel({ worker: true })),
 with the disks and the network built there from specs; the display, the input
 tokens and the sound work with it too. Console and evdev input and frames go
 through shared memory (read by the worker while the kernel runs);
 --worker=messages sends them as messages instead (handled when the kernel
 yields, up to 20 ms while the guest is busy), --worker=shared insists on
-shared memory. PCM and everything else are messages either way.
+shared memory. PCM goes through shared memory too unless --worker=messages;
+everything else is messages either way.
 
 --cpus N gives an SMP kernel (one built with CONFIG_SMP: kw_smp.config)
 N CPUs, each another instance of the kernel in its own thread on a shared
 memory, each with its own JIT; it implies --worker, and --stats prints the
 JIT counters per CPU. A UP kernel runs on one CPU (a log line says so). An SMP kernel has every device
-(their host side and their I/O stay with CPU 0), but no snapshots.
+(their host side and their I/O stay with CPU 0) and snapshots.
 
 --display gives the guest a display: /dev/fb0 (kwfb, 32 bpp XRGB8888), whose
 memory exists while a program has it open; 640x480, or --display=WxH (the
@@ -107,6 +126,11 @@ program has the device open:
 for the tablet {abs=X,Y} = move to pixel X,Y of the current mode (or X%,Y% of
 the picture), {abtn=B:1|0} and {awheel=N} as above.
 
+--gpu gives the guest a virtio-gpu device (kwvirtio): /dev/dri/card0, driver
+virtio_gpu, KMS with dumb buffers (2D, no 3D). While a KMS client has a
+framebuffer on its scanout the display shows that instead of /dev/fb0's
+pixels; its size is --display's (implied, 640x480 by default).
+
 --sound-wav FILE gives the guest a sound card (kwsnd: ALSA hw:0,0, i.e.
 /dev/snd/pcmC0D0p, and OSS /dev/dsp; playback only) and writes what it plays
 to FILE as a WAV, in the format of the first stream (later ones are
@@ -123,7 +147,8 @@ the guest has no vsock transport (connect() fails with ENODEV).
 the SDK serves it over 9p on vsock and the guest's kw9p mounts it once kwtty
 answers (it needs vsock). :ro makes it read-only. Each guest write(2) reaches
 the host as it happens; host changes show in the guest within 1 s. Files show
-as root's; symlinks stay symlinks and are never followed on the host.
+as uid and gid 1000's (the distro images' user); symlinks stay symlinks and are
+never followed on the host.
 
 --forward HOSTPORT:GUESTPORT listens on the host's 127.0.0.1:HOSTPORT and
 connects each connection to the guest's 127.0.0.1:GUESTPORT (repeatable), e.g.
@@ -134,11 +159,12 @@ connection.
 
 --wasi (prototype) runs the guest's WASI programs (wasm32-wasi .wasm files,
 preview 1 or 0, executable, run by path) on this host's wasm engine, each in
-a worker thread of its own: the guest's binfmt_misc hands them to
-/usr/bin/kwwasi, which talks to the host over vsock port 1021 and does the
-program's file I/O in the guest, as that process; killing kwwasi ends the
-program. It needs vsock, and kwwasi registered in the guest (the kw layer's
-/usr/lib/kw/rc does it at boot, also in the base shell).
+a worker thread of its own: the guest's binfmt_misc hands them to kwwasi
+(/usr/lib/kw/kwwasi, a link to kwbox), which talks to the host over vsock
+port 1021 and does the program's file I/O in the guest, as that process;
+killing kwwasi ends the program. It needs vsock, and kwwasi registered in
+the guest (the kw layer's /usr/lib/kw/rc does it at boot, also in the base
+shell).
 
 --shm gives the guest kwshm (/dev/kwshm: guest programs export shmem files to
 the host, which reads and writes their pages in place; the SDK's vm.shm). The
@@ -158,7 +184,8 @@ it run on, {suspend=FILE} saves it and stops it (exit 0, no clean shutdown),
 and --restore FILE resumes one instead of booting, with the same kernel (the
 snapshot carries the memory size; --mem, --initrd and --append do not apply)
 and the same devices (--no-net, --no-vsock, --display, --sound and --shm as
-when it was saved), with or without --worker. --mount directories survive
+when it was saved), with or without --worker, and on as many CPUs (--cpus
+defaults to the snapshot's; another count is refused). --mount directories survive
 (without --worker), with the guest's open files on them: pass the same
 --mount options again (a file deleted meanwhile gives "Stale file handle").
 Other vsock sessions (--forward connections) and the guest's TCP connections
@@ -207,12 +234,22 @@ const diskBoot = diskSpecs.length > 0 && !distroOpt;
 const initrdOpt = initrdArg ?? (diskBoot ? "none" : "bundled");
 const kernelOpt = positional ?? opt("kernel");
 const kernelPath = kernelOpt ?? fileURLToPath(bundledKernelUrl);
-const memoryMiB = Number(opt("mem", "512"));
+const memoryMiB = Number(opt("mem", "2048"));
 const timeout = Number(opt("timeout", "0"));
 const scripted = opt("input");
 const rel = (p) => path.relative(process.cwd(), p) || p;
 const workerArg = args.find((a) => a === "--worker" || a.startsWith("--worker="));
-const smpCpus = Number(opt("cpus", "1"));
+const profileFile = opt("profile");
+const profileRoot = opt("profile-root");
+const profile = profileFile === void 0 ? void 0 : {
+	hz: Number(opt("profile-hz", "1000")),
+	insns: Number(opt("profile-insns", "1000000"))
+};
+if (profile && (!profileFile || profileFile.startsWith("--") || !(profile.hz >= 0) || !(profile.insns >= 0) || profileRoot?.startsWith("--") || args.includes("--profile-root") && !profileRoot)) {
+	process.stderr.write("[host] --profile FILE [--profile-hz N] [--profile-insns N] [--profile-root DIR]\n");
+	process.exit(1);
+}
+const smpCpus = Number(opt("cpus", String(restore?.cpus ?? 1)));
 if (!Number.isInteger(smpCpus) || smpCpus < 1 || smpCpus > 32) {
 	process.stderr.write("[host] --cpus N: 1 to 32 CPUs\n");
 	process.exit(1);
@@ -253,7 +290,8 @@ if (initrdOpt === "bundled" && !useBundle && !existsSync(path.join(root, "vendor
 }
 const initrdName = initrdOpt === "bundled" ? "base" : initrdOpt;
 const initrdPath = useBundle ? "bundled" : initrdName === "none" || /[/.]/.test(initrdName) ? initrdName : path.join(root, "vendor/build/initramfs", `${initrdName}.cpio`);
-const cmdline = appendArg ?? (useBundle && bundled.cmdline ? bundled.cmdline : (diskSpecs.length || distroOpt) && initrdPath === "none" ? `console=hvc0 root=/dev/wda ${distroOpt ? "ro" : "rw"}` : "console=hvc0 rdinit=/init");
+const userArg = opt("user");
+const cmdline = (appendArg ?? (useBundle && bundled.cmdline ? bundled.cmdline : (diskSpecs.length || distroOpt) && initrdPath === "none" ? `console=hvc0 root=/dev/wda ${distroOpt ? "ro" : "rw"}` : "console=hvc0 rdinit=/init")) + (userArg ? ` kw.user=${userArg}` : "");
 let initrd;
 try {
 	initrd = useBundle ? void 0 : initrdPath === "none" ? null : new Uint8Array(readFileSync(initrdPath));
@@ -365,7 +403,7 @@ const net = !useNet || worker ? void 0 : new NetStack({
 	mtu: mtu ? Number(mtu) : void 0,
 	log
 });
-if (restorePath && restore) process.stderr.write(`[host] restoring ${rel(restorePath)} (${restore.memory.byteLength / 1048576} MiB)\n`);
+if (restorePath && restore) process.stderr.write(`[host] restoring ${rel(restorePath)} (${restore.memory.byteLength / 1048576} MiB${(restore.cpus ?? 1) > 1 ? `, ${restore.cpus} CPUs` : ""})\n`);
 const sizeOpt = opt("size")?.match(/^(\d+)x(\d+)$/);
 const consoleSize = sizeOpt ? {
 	cols: Number(sizeOpt[1]),
@@ -497,7 +535,8 @@ try {
 		jit: !flag("no-jit"),
 		cpus: smpCpus,
 		onOutput: (bytes) => process.stdout.write(bytes),
-		display: displaySize ?? flag("display"),
+		display: displaySize ?? (flag("display") || flag("gpu")),
+		gpu: flag("gpu"),
 		onDisplay: (m) => log(m ? `[host] display: ${m.width}x${m.height}, stride ${m.stride}` : "[host] display: closed"),
 		onInput: (s) => log(`[host] evdev: keyboard ${s.keyboard ? "open" : "closed"}, mouse ${s.mouse ? "open" : "closed"}, tablet ${s.tablet ? "open" : "closed"}`),
 		sound: sound.option,
@@ -505,7 +544,8 @@ try {
 		shm: flag("shm"),
 		mounts,
 		restore,
-		distro
+		distro,
+		profile
 	};
 	vm = worker ? await createKernelOn(nodePlatform(bundledKernelUrl), {
 		...common,
@@ -590,7 +630,7 @@ function injectInput(token) {
 		const downs = state === void 0 ? [true, false] : [state === "1"];
 		for (const d of downs) note(`key ${code} ${d ? "down" : "up"}`, ev.key(code, d));
 	} else if (what === "btn" || what === "abtn") {
-		const code = a === "left" ? 272 : a === "right" ? 273 : a === "middle" ? 274 : Number(a);
+		const code = a === "left" ? BTN_LEFT : a === "right" ? BTN_RIGHT : a === "middle" ? BTN_MIDDLE : Number(a);
 		const downs = state === void 0 ? [true, false] : [state === "1"];
 		const tablet = what === "abtn";
 		for (const d of downs) note(`${tablet ? "tablet " : ""}button ${code} ${d ? "down" : "up"}`, tablet ? ev.tabletButton(code, d) : ev.button(code, d));
@@ -622,15 +662,41 @@ function printKwemuStats(k) {
 	process.stderr.write(`[kwemu] instret=${k.icount} compiled insns=${(w(203) * 100 / ic).toFixed(2)}% handbacks=${w(204)}\n`);
 	process.stderr.write(`[kwemu-exits] entries=${jx(0)} handbacks=${jx(1)} side=${jx(2)} (region ${jx(25)}) direct=${jx(3)} jalr=${jx(4)} stop=${jx(24)}\n`);
 	process.stderr.write(`[kwemu-jx] ${k.words.slice(base, 501).join(" ")}\n`);
+	process.stderr.write(`[kwemu-free] grow=${jx(59)} exit_grow=${jx(60)} clock=${jx(61)} ring=${jx(62)} other=${jx(63)}\n`);
 	process.stderr.write(`[kwemu-stats] lookups_slow=${w(0)} revalidated=${w(1)} decoded=${w(2)} resets=${w(3)} blocks=${w(4)} insns/block=${(w(5) / Math.max(w(4), 1)).toFixed(2)} single_steps=${w(6)} walks r/w/x=${w(7)}/${w(8)}/${w(9)} generic=${w(10)}\n`);
 }
+let finishing = false;
 function finish(res) {
+	if (!profileFile) return finishNow(res);
+	if (finishing) return;
+	finishing = true;
+	Promise.race([vm.profile(), new Promise((r) => setTimeout(r, 5e3))]).then(async (report) => {
+		if (report && profileRoot) {
+			const top = path.resolve(profileRoot);
+			await symbolizeProfile(report, (p) => {
+				const f = path.resolve(top, `.${p}`);
+				return f.startsWith(top + path.sep) && existsSync(f) && statSync(f).isFile() ? readFileSync(f) : void 0;
+			});
+		}
+		if (!report) process.stderr.write("[host] profile: no report\n");
+		else {
+			writeFileSync(profileFile, `${JSON.stringify(report, null, 1)}\n`);
+			process.stderr.write(`${formatProfile(report)}\n[host] profile: ${profileFile} (${report.rows.length} rows)\n`);
+		}
+		finishNow(res);
+	}, (e) => {
+		process.stderr.write(`[host] profile: ${e?.message ?? e}\n`);
+		finishNow(res);
+	});
+}
+function finishNow(res) {
 	if (interactive) process.stdin.setRawMode(false);
 	sound.close(flag("stats") ? vm.stats().sound : void 0);
 	if (flag("stats")) {
 		const s = vm.stats();
 		process.stderr.write(`[host] ${path.basename(kernelPath)} (${moduleIsMemory64(module) ? "memory64" : "32-bit memory"}), compile ${tCompile.toFixed(0)} ms, ran ${(s.uptimeMs / 1e3).toFixed(2)} s, switches ${s.switches}, idles ${s.idles}, yields ${s.yields}\n`);
 		if (s.display) process.stderr.write(`[host] display: ${s.display.attaches} attaches (opens and mode changes), ${s.display.detaches} closes\n`);
+		if (s.gpu) process.stderr.write(`[host] gpu: ${s.gpu.commands} commands (${s.gpu.errors} errors), ${s.gpu.transfers} transfers (${(s.gpu.transferBytes / 1048576).toFixed(1)} MiB copied), ${s.gpu.flushes} flushes, ${s.gpu.cursor} cursor\n`);
 		if (s.evdev) process.stderr.write(`[host] evdev: ${s.evdev.delivered} events delivered, ${s.evdev.dropped} dropped\n`);
 		const jitLine = (who, j) => process.stderr.write(!j.requested ? `[host] ${who}: not in this kernel\n` : !j.enabled ? `[host] ${who}: off\n` : `[host] ${who}: ${j.compiled} compiled, ${j.live} live (max ${j.maxLive}), ${j.freed} freed, ${j.failed} failed, ${j.compileMs.toFixed(0)} ms compiling ${(j.bytes / 1024).toFixed(0)} KiB (longest ${j.maxCompileMs.toFixed(2)} ms); ` + (j.collected < 0 ? "collection not tracked\n" : `${j.collected} collected, ${j.retained} freed but uncollected (max ${j.maxRetained}), ${j.gcNudges} GC nudges, ${j.refused} refused\n`));
 		jitLine("jit", s.jit);
