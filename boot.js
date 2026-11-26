@@ -1,7 +1,8 @@
 import { createKernel } from './sdk/web.mjs';
 
 const status = document.querySelector('#status');
-const japanese = document.documentElement.lang === 'ja';
+const japanese = /^ja(?:-|$)/i.test(navigator.language);
+document.documentElement.lang = japanese ? 'ja' : 'en';
 const localize = (ja, en) => japanese ? ja : en;
 const instance = crypto.randomUUID();
 let vm;
