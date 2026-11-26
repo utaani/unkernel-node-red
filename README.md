@@ -2,6 +2,8 @@
 
 [ブラウザでデモを開く](https://utaani.github.io/unkernel-node-red/)
 
+<img width="1282" height="929" alt="image" src="https://github.com/user-attachments/assets/e7d65457-831b-4d1c-9aa0-469930f8fd88" />
+
 [unkernel](https://github.com/pithings/unkernel) を使って、[Node-RED](https://github.com/node-red/node-red) をブラウザ内で起動するデモです。GitHub Pages が配信するファイルを読み込むと、空の Node-RED エディターが開きます。Node-RED は閲覧者のブラウザ内で動作し、サーバーをデプロイせず、 Node-RED のお試しが可能です。
 
 ## 試し方
@@ -45,7 +47,7 @@ GitHub Pages のプロジェクト URL 直下にある `/api/test` は静的配�
 
 ## 保証について
 
-このデモは無保証で提供します。
+このデモは無保証で提供します。github pagesの [無料枠](https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits)の範囲で提供しています。
 
 ## ライセンス
 
