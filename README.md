@@ -1,8 +1,10 @@
 # Node-RED on unkernel
 
-[日本語版](README-ja.md) · [Open the demo](https://utaani.github.io/unkernel-node-red/)
+[日本語版](README-ja.md) 
 
-<img width="1282" height="929" alt="Node-RED editor running in the browser" src="https://github.com/user-attachments/assets/e7d65457-831b-4d1c-9aa0-469930f8fd88" />
+[Open the demo](https://utaani.github.io/unkernel-node-red/)
+
+<img width="1282" height="929" alt="Node-RED editor running in the browser" src="ss-en.png?raw=true" />
 
 This demo runs [Node-RED](https://github.com/node-red/node-red) in your browser using [unkernel](https://github.com/pithings/unkernel). GitHub Pages serves the files. Your browser boots the Linux guest and opens an empty Node-RED editor, so you can try it without deploying a server.
 
