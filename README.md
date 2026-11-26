@@ -1,35 +1,35 @@
 # Node-RED on unkernel
 
-[ブラウザでデモを開く](https://utaani.github.io/unkernel-node-red/)
+[日本語版](README-ja.md) · [Open the demo](https://utaani.github.io/unkernel-node-red/)
 
-<img width="1282" height="929" alt="image" src="https://github.com/user-attachments/assets/e7d65457-831b-4d1c-9aa0-469930f8fd88" />
+<img width="1282" height="929" alt="Node-RED editor running in the browser" src="https://github.com/user-attachments/assets/e7d65457-831b-4d1c-9aa0-469930f8fd88" />
 
-[unkernel](https://github.com/pithings/unkernel) を使って、[Node-RED](https://github.com/node-red/node-red) をブラウザ内で起動するデモです。GitHub Pages が配信するファイルを読み込むと、空の Node-RED エディターが開きます。Node-RED は閲覧者のブラウザ内で動作し、サーバーをデプロイせず、 Node-RED のお試しが可能です。
+This demo runs [Node-RED](https://github.com/node-red/node-red) in your browser using [unkernel](https://github.com/pithings/unkernel). GitHub Pages serves the files. Your browser boots the Linux guest and opens an empty Node-RED editor, so you can try it without deploying a server.
 
-## 試し方
+## Try it
 
-1. WebAssembly JSPI に対応するブラウザでデモを開きます。Chromium 156 で動作を確認しています。
-2. 起動が終わると、空の「フロー 1」が表示されます。初回の配信量は約 67.6 MiB で、起動は約 1〜2 分でした。
-3. たとえば Inject ノードと Debug ノードをつなぎ、デプロイしてから Inject のボタンを押すと、Debug 欄にメッセージが出ます。
+1. Open the demo in a browser that supports WebAssembly JSPI. It was tested with Chromium 156.
+2. Wait for the empty **Flow 1** tab to appear. The initial download is about 67.6 MiB. Startup took about one to two minutes on a Raspberry Pi 5.
+3. Connect an Inject node to a Debug node, click **Deploy**, and press the Inject button. The message appears in the Debug sidebar.
 
-編集内容はそのタブの試用環境に保存されます。ページを再読み込みすると初期状態に戻るので、残したいフローは Node-RED のメニューから JSON にエクスポートしてください。
+Your edits live in the current browser session. Reloading the page resets the demo. To keep a flow, export it as JSON from the Node-RED menu before reloading.
 
-## カスタムノードと設定
+## Custom nodes and settings
 
-「パレットの管理」から、依存関係を同梱した、または依存関係のない Node-RED ノードの npm パッケージ（`.tgz`）をアップロードできます。ゲストはオフラインで動作し、追加したノードはページの再読み込みで消えます。
+Use **Manage palette** to upload a Node-RED npm package (`.tgz`) that has no dependencies or bundles them. The guest runs offline, and any nodes you add are lost when you reload the page.
 
-同梱した [settings.js](settings.js) ではウェルカムツアーを無効にしています。このファイルの設定を変更する場合は、ゲストイメージの再ビルドが必要です。
+The included [settings.js](settings.js) disables the welcome tour. Changes to this file take effect after the guest image is rebuilt.
 
-## 仕組み
+## How it works
 
-- Web Worker で unkernel `v0.2.0-261126-fd204d3` を起動し、`alpine.erofs` を Alpine のルートに使います。圧縮した ext4 イメージから Node-RED 5.0.10 と Node.js 24.22.3 を読み込みます。
-- 起動ページがゲストの Web Worker を保持し、Node-RED のエディターは同じページ内の iframe で開きます。これにより、ゲストを動かしている親ページを開いたまま、エディターに専用の URL を持たせられます。エディターはその URL を基準に、JavaScript、CSS、フロー API を相対パスで読み込みます。
-- Service Worker は `editor/<セッションID>/` 以下の HTTP リクエストを起動元のタブへ渡し、親ページが unkernel の `vm.fetch()` でゲストの Node-RED に届けます。ライブ通知は、ゲスト内の WebSocket から HTTP ポーリングでエディターに届けます。
-- このリポジトリのルートは静的サイトの配信物です。ローカルで試す場合は、チェックアウトしたディレクトリで `python3 -m http.server 18883 --bind 127.0.0.1` を実行し、`http://127.0.0.1:18883/` を開きます。GitHub Pages では HTTPS で配信しています。
+- A Web Worker runs unkernel `v0.2.0-261126-fd204d3`. The guest uses `alpine.erofs` as its Alpine root filesystem and loads Node-RED 5.0.10 and Node.js 24.22.3 from a compressed ext4 image.
+- The main page keeps the guest's Web Worker alive and opens the editor in an iframe. The editor gets its own URL and uses relative paths to load JavaScript, CSS, and the flow API.
+- A Service Worker routes HTTP requests under `editor/<session-id>/` back to the tab that started the guest. The page forwards them to Node-RED using unkernel's `vm.fetch()`. The editor receives live updates by polling a bridge to the guest's WebSocket.
+- The repository root contains the static site. To try a local checkout, run `python3 -m http.server 18883 --bind 127.0.0.1` from the repository root and open `http://127.0.0.1:18883/`. GitHub Pages serves the demo over HTTPS.
 
-### HTTP In ノードを試す
+### Try an HTTP In node
 
-ゲスト内の `http://localhost:1880/api/test` は、そのゲストで動く Node-RED を指します。エディターと同じブラウザからは、エディターの URL を基準にした `api/test` を呼ぶと、同じ Service Worker 経由で HTTP In ノードに届きます。たとえば `GET /test` をデプロイした後、デモのトップページの開発者コンソールで次を実行できます。
+Inside the guest, `http://localhost:1880/api/test` points to its own Node-RED instance. From the same browser, a request to `api/test` relative to the editor URL reaches the HTTP In node through the Service Worker. After deploying a flow with an HTTP In node for `GET /test`, run this in the demo page's top-level developer console.
 
 ```js
 const editor = document.querySelector('iframe');
@@ -37,27 +37,27 @@ const response = await fetch(new URL('api/test', editor.src));
 console.log(response.status, await response.text());
 ```
 
-GitHub Pages のプロジェクト URL 直下にある `/api/test` は静的配信先へのリクエストになります。別端末や外部サービスから Webhook として呼ぶには、外部のリクエストを受け付ける実行環境が必要です。
+A request to `/api/test` directly under the GitHub Pages project URL goes to the static host. To accept webhook requests from other devices or services, you need a runtime that can accept external requests.
 
-## GitHub Pages 版で現在できないこと
+## Current limitations on GitHub Pages
 
-- **HTTP Request ノードから外部サービスに接続する。** 現在の公開版は、ブラウザ内の unkernel ゲストに外向きのネットワークを設定していないため、ゲストからインターネットに接続できません。
-- **HTTP In ノードを外部から呼べる API や Webhook として公開する。** GitHub Pages は静的ファイルを配信し、外部からのリクエストを閲覧者のブラウザ内で動くゲストに転送しません。同じブラウザ内からの動作確認は、上の「HTTP In ノードを試す」の手順でできます。
-- **「パレットの管理」で検索したカスタムノードを npm レジストリから直接追加する。** ゲストとゲスト内の npm はオフラインです。`.tgz` のアップロードで追加できます。依存関係がある場合は、間接依存も含めて依存パッケージを先に利用できる状態にするか、必要な依存関係をパッケージに同梱してください。依存パッケージの事前導入で解決できる場合は、依存される側から順に導入します。
+- **Outgoing connections from the HTTP Request node.** The published demo leaves the guest's outbound network unconfigured, so the guest cannot reach the internet.
+- **Public APIs and webhooks using HTTP In nodes.** GitHub Pages serves static files and cannot forward outside requests to a guest running in a visitor's browser. You can test the endpoint from the same browser using the example above.
+- **Installing custom nodes from the npm registry through Manage palette.** The guest and its npm client run offline. You can upload a `.tgz` file. If it has dependencies, make all direct and transitive dependencies available first or bundle them with the package. When separate offline installs work for those packages, install dependencies before the packages that use them.
 
-## 保証について
+## Warranty
 
-このデモは無保証で提供します。github pagesの [無料枠](https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits)の範囲で提供しています。
+This demo is provided without warranty. It is hosted within the [GitHub Pages usage limits](https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits).
 
-## ライセンス
+## Licenses
 
-このデモ用に作成したコードのライセンスは検討中です。同梱の第三者ソフトウェアには、それぞれのライセンスが適用されます。
+The license for this demo's own code is under consideration. Bundled third-party software is subject to its own licenses.
 
-| 配布物 | ライセンスと上流 |
+| Distributed file | License and upstream project |
 | --- | --- |
-| `sdk/` の unkernel JavaScript SDK | MIT。[unkernel の MIT ライセンス](https://github.com/pithings/unkernel/blob/fd204d3/LICENSE-MIT) |
-| `sdk/unkernel.wasm` | unkernel の Linux カーネル部分は GPL-2.0-only。[unkernel の GPL ライセンス](https://github.com/pithings/unkernel/blob/fd204d3/LICENSE)・[使用版の上流コミット](https://github.com/pithings/unkernel/tree/fd204d3) |
-| `alpine.erofs` | AArch64 版の Alpine ユーザーランド。[上流の配布物](https://github.com/pithings/unkernel/releases/tag/v0.2.0-261126-fd204d3) |
-| `node-red.kwsparse.gz` | [Node-RED（Apache-2.0）](https://github.com/node-red/node-red/blob/main/LICENSE)、[Node.js と同梱コンポーネント](https://github.com/nodejs/node/blob/v24.22.3/LICENSE)、Alpine のライブラリ、npm 依存パッケージを収録 |
+| unkernel JavaScript SDK in `sdk/` | MIT. [unkernel MIT license](https://github.com/pithings/unkernel/blob/fd204d3/LICENSE-MIT) |
+| `sdk/unkernel.wasm` | The unkernel Linux kernel component is GPL-2.0-only. [unkernel GPL license](https://github.com/pithings/unkernel/blob/fd204d3/LICENSE) · [Upstream revision](https://github.com/pithings/unkernel/tree/fd204d3) |
+| `alpine.erofs` | Alpine userspace for AArch64. [Upstream release](https://github.com/pithings/unkernel/releases/tag/v0.2.0-261126-fd204d3) |
+| `node-red.kwsparse.gz` | Includes [Node-RED (Apache-2.0)](https://github.com/node-red/node-red/blob/main/LICENSE), [Node.js and bundled components](https://github.com/nodejs/node/blob/v24.22.3/LICENSE), Alpine libraries, and npm dependencies. |
 
-配布物に含まれる第三者ソフトウェアのライセンス文書・著作権表示・NOTICE、および GPL 対象バイナリの対応ソースの提供方法は確認中です。表の上流リンクは使用したソフトウェアの参照先です。
+Third-party license texts, copyright notices, NOTICE files, and the way to make corresponding source available for GPL-covered binaries are under review. The links above identify the upstream projects and versions used.
