@@ -91,6 +91,10 @@ In this demo, **Manage palette** waits up to two minutes for the installation re
 
 The top-level button opens `editor/<session-id>/api/dashboard/` for the current session. If you use a different base path, edit the part after `/api/` in the new tab's URL. The **Open Dashboard** button in the Dashboard 2 sidebar opens a URL without the session ID, which returns a GitHub Pages 404 in this demo.
 
+<img width="1282" height="929" alt="Node-RED editor and FlowFuse Dashboard displayed side by side" src="dashboard-sample.png?raw=true" />
+
+The screenshot shows the Node-RED editor and dashboard side by side using Microsoft Edge’s split screen feature.
+
 ## Current limitations on GitHub Pages
 
 - **Public HTTP In endpoints and dashboard URLs.** GitHub Pages serves static files. The guest handling these requests runs in the browser session that launched the demo. Wisp provides outbound connections from the guest.
