@@ -75,7 +75,7 @@ async function boot() {
       reject(new Error(result.kind + ' ' + output.slice(-700)));
     });
   });
-  vm.write(net ? 'npm_config_offline=false sh /data/start-guest\n' : 'sh /data/start-guest\n');
+  vm.write(net ? 'npm_config_offline=false npm_config_maxsockets=4 sh /data/start-guest\n' : 'sh /data/start-guest\n');
   await ready;
   const channel = new MessageChannel();
   const registered = new Promise(resolve => { channel.port1.onmessage = resolve; });

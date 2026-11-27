@@ -4,6 +4,7 @@ Changes to the public browser demo, grouped by commit date.
 
 ## 2026-11-27
 
+- Limited npm to four concurrent connections per origin in Wisp sessions to reduce package download timeouts when installing nodes from the palette.
 - Added an **Open Dashboard** button that opens FlowFuse Dashboard for the current session in a new tab. The Dashboard package needs to be installed in that session. ([8e6b468](https://github.com/utaani/unkernel-node-red/commit/8e6b46884884e5d25fd91c77eed0be92f5e92ddb))
 - Expanded the guest data disk from 224 MiB to 512 MiB to make room for additional packages and flows. ([531d990](https://github.com/utaani/unkernel-node-red/commit/531d99023e0b4ad494fc18f53b84cbc7619d7c69))
 - Added a guest terminal and a button to reload the Node-RED editor while keeping the guest running. ([23ad1d2](https://github.com/utaani/unkernel-node-red/commit/23ad1d2df28c5fd43d6ca594c04de96e18895016))
