@@ -34,10 +34,10 @@
 
 ### 1. ブラウザが稼働しているホスト OS で Wisp リレーを起動する
 
-手軽な例として、uv と Python 3 で [Python 版 Wisp リレー](https://github.com/MercuryWorkshop/wisp-server-python) を起動する方法を紹介します。uv の導入方法は [公式手順](https://docs.astral.sh/uv/getting-started/installation/)を参照してください。uv が依存パッケージを用意するので、仮想環境を手動で作成・有効化する必要はありません。
+ブラウザが稼働しているホスト OS で、Node.js と npm が使える端末を開きます。Windows の PowerShell では次のコマンドで Wisp リレーを起動します。macOS や Linux では `npx.cmd` を `npx` に置き換えてください。 [wisp-js の公式ドキュメント](https://github.com/MercuryWorkshop/wisp-js#server-cli)
 
 ```powershell
-uv run --no-project --with wisp-python python -m wisp.server --host 127.0.0.1 --port 18887
+npx.cmd --yes --package=@mercuryworkshop/wisp-js@0.5.3 wisp-js-server --host 127.0.0.1 --port 18887
 ```
 
 ### 2. リレーの URL を指定してデモを開く
@@ -79,6 +79,10 @@ GitHub Pages のプロジェクト URL 直下にある `/api/test` は静的配�
 1. Wisp を指定してデモを起動し、「パレットの管理」から `@flowfuse/node-red-dashboard`（FlowFuse Dashboard 2）を追加します。
 2. Inject ノードを Dashboard の `text` ノードにつなぎます。`text` のページとグループを設定し、ダッシュボードのベースパスを `/dashboard` にしてデプロイします。
 3. デモ上部の「ダッシュボードを開く」を押すと、同じゲストのダッシュボードが別タブで開きます。デモ本体を開いたまま Inject を押し、表示が更新されることを確認できます。
+
+Windows で Node.js 版の Wisp リレーを使ったテストでは、「ノードを追加」を1回押してから FlowFuse Dashboard 2 がパレットに表示されるまで、約5分10秒かかりました。導入時間は、ネットワークやリレーの状況に加え、ブラウザ内の unkernel ゲストが使える CPU やメモリにも左右される可能性があります。
+
+このデモの「パレットの管理」では、インストール要求の応答を最大2分待ちます。画面側の待ち時間が切れた後も、ゲスト内の npm はインストールを続けることがあります。追加ボタンは1回だけ押し、イベントログかパレットに結果が出るまでお待ちください。
 
 上部のボタンは、現在のセッションの `editor/<セッションID>/api/dashboard/` を開きます。別のベースパスを使う場合は、開いたタブの URL で `/api/` に続く部分を変更してください。Dashboard 2 のサイドバーにある「ダッシュボードを開く」は、セッション ID を含まない URL を開くため、このデモでは GitHub Pages の 404 になります。
 

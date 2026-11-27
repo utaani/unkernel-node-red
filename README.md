@@ -34,10 +34,10 @@ The demo starts offline by default. Set `?wisp=` in the demo URL to connect the 
 
 ### 1. Start a Wisp relay on the host OS running your browser
 
-One simple option is to run the [Python Wisp server](https://github.com/MercuryWorkshop/wisp-server-python) with uv and Python 3. uv installs the dependencies for the command and manages the virtual environment. [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
+On the host running your browser, open a terminal with Node.js and npm available. In Windows PowerShell, run the following command to start the Wisp relay. On macOS or Linux, use `npx` in place of `npx.cmd`. [wisp-js documentation](https://github.com/MercuryWorkshop/wisp-js#server-cli)
 
-```sh
-uv run --no-project --with wisp-python python -m wisp.server --host 127.0.0.1 --port 18887
+```powershell
+npx.cmd --yes --package=@mercuryworkshop/wisp-js@0.5.3 wisp-js-server --host 127.0.0.1 --port 18887
 ```
 
 ### 2. Open the demo with the relay URL
@@ -80,6 +80,10 @@ A request to `/api/test` directly under the GitHub Pages project URL goes to the
 1. Start the demo with Wisp and use **Manage palette** to install `@flowfuse/node-red-dashboard` (FlowFuse Dashboard 2).
 2. Wire an Inject node to a Dashboard `text` node. Assign the widget to a page and group, set the dashboard base path to `/dashboard`, and deploy.
 3. Click **Open Dashboard** at the top of the demo to open the dashboard from the same guest in a new tab. Keep the demo tab open and click Inject to see the dashboard update.
+
+In a Windows test using the Node.js Wisp relay, FlowFuse Dashboard 2 appeared in the palette about 5 minutes and 10 seconds after a single click on **Install**. Installation time may vary with network and relay conditions and the CPU and memory available to the unkernel guest in the browser.
+
+In this demo, **Manage palette** waits up to two minutes for the installation request to return. npm may keep running inside the guest after the request times out. Click **Install** once and wait for the result in the event log or the palette before trying again.
 
 The top-level button opens `editor/<session-id>/api/dashboard/` for the current session. If you use a different base path, edit the part after `/api/` in the new tab's URL. The **Open Dashboard** button in the Dashboard 2 sidebar opens a URL without the session ID, which returns a GitHub Pages 404 in this demo.
 

@@ -4,6 +4,7 @@ Changes to the public browser demo, grouped by commit date.
 
 ## 2026-11-27
 
+- Switched both README guides to the Node.js Wisp relay via npx and documented Dashboard 2 installation timing and the demo’s two-minute response limit.
 - Linked to the Wisp protocol specification and relay implementations from both READMEs.
 - Reorganized the English and Japanese READMEs and documented browser requirements, the guest terminal, Wisp setup, custom nodes, HTTP In, and FlowFuse Dashboard.
 - Limited npm to four concurrent connections per origin in Wisp sessions to reduce package download timeouts when installing nodes from the palette.
