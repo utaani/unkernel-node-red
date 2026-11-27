@@ -4,6 +4,7 @@ Changes to the public browser demo, grouped by commit date.
 
 ## 2026-11-27
 
+- Made Reload editor re-register the service worker and reconnect the current session before reopening the editor. ([e015cc7](https://github.com/utaani/unkernel-node-red/commit/e015cc7bba82890cdc0bdf8c373df9b9c3f9f42d))
 - Switched both README guides to the Node.js Wisp relay via npx and documented Dashboard 2 installation timing and the demo’s two-minute response limit. ([1420c12](https://github.com/utaani/unkernel-node-red/commit/1420c12ba118c46368f0a275bd0ed4a1d0385361))
 - Updated the English and Japanese demo screenshots. ([8842aec](https://github.com/utaani/unkernel-node-red/commit/8842aeca761e14960178e3755a92163a56d18d48))
 - Linked to the Wisp protocol specification and relay implementations from both READMEs. ([3dc8770](https://github.com/utaani/unkernel-node-red/commit/3dc8770bb90843212cf6a215956c0118714024b2))
