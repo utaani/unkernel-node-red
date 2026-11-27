@@ -30,7 +30,7 @@ Click **Terminal** at the top of the demo to open a shell in the running guest. 
 
 ## Connect the guest to the internet through a Wisp relay
 
-The demo starts offline by default. Set `?wisp=` in the demo URL to connect the guest to external services through a Wisp relay. For example, you can call an external API with an HTTP Request node or install nodes from the npm registry using **Manage palette**. The relay's configuration determines which destinations the guest can reach.
+The demo starts offline by default. Set `?wisp=` in the demo URL to connect the guest to external services through a Wisp relay. For example, you can call an external API with an HTTP Request node or install nodes from the npm registry using **Manage palette**. The relay's configuration determines which destinations the guest can reach. [Wisp protocol and relay implementations](https://github.com/MercuryWorkshop/wisp-protocol)
 
 ### 1. Start a Wisp relay on the host OS running your browser
 
