@@ -90,6 +90,9 @@ Windows で Node.js 版の Wisp リレーを使ったテストでは、「ノー
 
 上部のボタンは、現在のセッションの `editor/<セッションID>/api/dashboard/` を開きます。別のベースパスを使う場合は、開いたタブの URL で `/api/` に続く部分を変更してください。Dashboard 2 のサイドバーにある「ダッシュボードを開く」は、セッション ID を含まない URL を開くため、このデモでは GitHub Pages の 404 になります。
 
+<img width="1282" height="929" alt="image" src="dashboard-sample.png?raw=true" /><br>
+（上のダッシュボードは、Edgeブラウザの画面分割機能をつかって表示しています）
+
 ## GitHub Pages 版で現在できないこと
 
 - **外部から HTTP In を呼び出す、またはダッシュボードを公開 URL として共有する。** GitHub Pages は静的ファイルを配信します。サービスへのリクエストを処理するゲストは、デモを起動したブラウザのセッション内で稼働します。Wisp はゲストからの外向き通信に使います。
