@@ -77,8 +77,12 @@ GitHub Pages のプロジェクト URL 直下にある `/api/test` は静的配�
 ## ダッシュボードを試す
 
 1. Wisp を指定してデモを起動し、「パレットの管理」から `@flowfuse/node-red-dashboard`（FlowFuse Dashboard 2）を追加します。
-2. Inject ノードを Dashboard の `text` ノードにつなぎます。`text` のページとグループを設定し、ダッシュボードのベースパスを `/dashboard` にしてデプロイします。
+2. Inject ノードを Dashboard の `text` ノードにつなぎます。`text` のページとグループを設定し、ダッシュボードのベースパスを `/dashboard` にし、設定の **Allow App Installation** をオンにしてデプロイします。
 3. デモ上部の「ダッシュボードを開く」を押すと、同じゲストのダッシュボードが別タブで開きます。デモ本体を開いたまま Inject を押し、表示が更新されることを確認できます。
+
+![Dashboard 2 の設定で Allow App Installation をオンにした画面](dashboard-config.png)
+
+FlowFuse Dashboard 2 v1.37.0 では、この設定がオフだと同じオリジンの Service Worker の登録が解除され、ダッシュボードのタブを閉じたあとにエディターが 404 になることがあります。Windows では、オンにするとこの現象を回避できることを確認しました。すでにエディターが 404 の場合は、デモ上部の **エディターを再読み込み** を押すと、現在のゲストセッションに再接続できます。
 
 Windows で Node.js 版の Wisp リレーを使ったテストでは、「ノードを追加」を1回押してから FlowFuse Dashboard 2 がパレットに表示されるまで、約5分10秒かかりました。導入時間は、ネットワークやリレーの状況に加え、ブラウザ内の unkernel ゲストが使える CPU やメモリにも左右される可能性があります。
 

@@ -78,8 +78,12 @@ A request to `/api/test` directly under the GitHub Pages project URL goes to the
 ## Try a dashboard
 
 1. Start the demo with Wisp and use **Manage palette** to install `@flowfuse/node-red-dashboard` (FlowFuse Dashboard 2).
-2. Wire an Inject node to a Dashboard `text` node. Assign the widget to a page and group, set the dashboard base path to `/dashboard`, and deploy.
+2. Wire an Inject node to a Dashboard `text` node. Assign the widget to a page and group, and set the dashboard base path to `/dashboard`. Enable **Allow App Installation** in the dashboard settings before deploying.
 3. Click **Open Dashboard** at the top of the demo to open the dashboard from the same guest in a new tab. Keep the demo tab open and click Inject to see the dashboard update.
+
+![Dashboard 2 settings with Allow App Installation enabled](dashboard-config.png)
+
+With this setting off, FlowFuse Dashboard 2 v1.37.0 unregisters service workers on the same origin. This can leave the editor showing a 404 after you close the dashboard tab. In testing on Windows, enabling the setting prevented the 404. If the editor already shows a 404, click **Reload editor** at the top of the demo to reconnect to the current guest session.
 
 In a Windows test using the Node.js Wisp relay, FlowFuse Dashboard 2 appeared in the palette about 5 minutes and 10 seconds after a single click on **Install**. Installation time may vary with network and relay conditions and the CPU and memory available to the unkernel guest in the browser.
 
