@@ -4,10 +4,11 @@ Changes to the public browser demo, grouped by commit date.
 
 ## 2026-11-27
 
-- Switched both README guides to the Node.js Wisp relay via npx and documented Dashboard 2 installation timing and the demo’s two-minute response limit.
-- Linked to the Wisp protocol specification and relay implementations from both READMEs.
-- Reorganized the English and Japanese READMEs and documented browser requirements, the guest terminal, Wisp setup, custom nodes, HTTP In, and FlowFuse Dashboard.
-- Limited npm to four concurrent connections per origin in Wisp sessions to reduce package download timeouts when installing nodes from the palette.
+- Switched both README guides to the Node.js Wisp relay via npx and documented Dashboard 2 installation timing and the demo’s two-minute response limit. ([1420c12](https://github.com/utaani/unkernel-node-red/commit/1420c12ba118c46368f0a275bd0ed4a1d0385361))
+- Updated the English and Japanese demo screenshots. ([8842aec](https://github.com/utaani/unkernel-node-red/commit/8842aeca761e14960178e3755a92163a56d18d48))
+- Linked to the Wisp protocol specification and relay implementations from both READMEs. ([3dc8770](https://github.com/utaani/unkernel-node-red/commit/3dc8770bb90843212cf6a215956c0118714024b2))
+- Reorganized the English and Japanese READMEs and documented browser requirements, the guest terminal, Wisp setup, custom nodes, HTTP In, and FlowFuse Dashboard. ([67d68c1](https://github.com/utaani/unkernel-node-red/commit/67d68c129d150f00b51658659aa2758f2826b5f7))
+- Limited npm to four concurrent connections per origin in Wisp sessions to reduce package download timeouts when installing nodes from the palette. ([7223586](https://github.com/utaani/unkernel-node-red/commit/7223586c5c6ef2f0604e0fb55f9f10a322e48697))
 - Added an **Open Dashboard** button that opens FlowFuse Dashboard for the current session in a new tab. The Dashboard package needs to be installed in that session. ([8e6b468](https://github.com/utaani/unkernel-node-red/commit/8e6b46884884e5d25fd91c77eed0be92f5e92ddb))
 - Expanded the guest data disk from 224 MiB to 512 MiB to make room for additional packages and flows. ([531d990](https://github.com/utaani/unkernel-node-red/commit/531d99023e0b4ad494fc18f53b84cbc7619d7c69))
 - Added a guest terminal and a button to reload the Node-RED editor while keeping the guest running. ([23ad1d2](https://github.com/utaani/unkernel-node-red/commit/23ad1d2df28c5fd43d6ca594c04de96e18895016))
