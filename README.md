@@ -1,37 +1,71 @@
 # Node-RED on unkernel
 
-[日本語版](README-ja.md) 
+[日本語版](README-ja.md)
 
 [Open the demo](https://utaani.github.io/unkernel-node-red/)
 
 <img width="1282" height="929" alt="Node-RED editor running in the browser" src="ss-en.png?raw=true" />
 
-This demo runs [Node-RED](https://github.com/node-red/node-red) in your browser using [unkernel](https://github.com/pithings/unkernel). GitHub Pages serves the files. Your browser boots the Linux guest and opens an empty Node-RED editor, so you can try it without deploying a server.
+This demo uses [unkernel](https://github.com/pithings/unkernel) to run [Node-RED](https://github.com/node-red/node-red) inside your browser. GitHub Pages serves the files, and the demo opens an empty Node-RED editor. You can try Node-RED without setting up a server.
 
-## Try it
+## Try it out
 
-1. Open the demo in a browser that supports WebAssembly JSPI. It was tested with Chromium 156.
-2. Wait for the empty **Flow 1** tab to appear. The initial download is about 67.6 MiB. Startup took about one to two minutes on a Raspberry Pi 5.
-3. Connect an Inject node to a Debug node, click **Deploy**, and press the Inject button. The message appears in the Debug sidebar.
+1. Open the demo in a browser that supports WebAssembly JSPI. We tested the demo in Chromium 156. Desktop Chrome and Edge support JSPI from version 137, Firefox from version 153, and Safari from version 27. The demo requires JSPI to start. [JSPI browser support](https://web-platform-dx.github.io/web-features-explorer/features/wasm-jspi/)
+2. Once startup finishes, an empty **Flow 1** appears. The initial download is about 67.6 MiB. In testing, startup took about one to two minutes.
+3. Connect an Inject node to a Debug node, deploy the flow, and click the Inject button. A message appears in the Debug sidebar.
 
-Your edits live in the current browser session. Reloading the page resets the demo. To keep a flow, export it as JSON from the Node-RED menu before reloading.
-
-## Custom nodes and settings
-
-Use **Manage palette** to upload a Node-RED npm package (`.tgz`) that has no dependencies or bundles them. The guest runs offline, and any nodes you add are lost when you reload the page.
-
-The included [settings.js](settings.js) disables the welcome tour. Changes to this file take effect after the guest image is rebuilt.
+Your changes are saved in the session running in that tab. Reloading the entire demo page starts a fresh session. To keep your flows, export them as JSON from the Node-RED menu.
 
 ## How it works
 
-- A Web Worker runs unkernel `v0.2.0-261126-fd204d3`. The guest uses `alpine.erofs` as its Alpine root filesystem and loads Node-RED 5.0.10 and Node.js 24.22.3 from a compressed ext4 image.
-- The main page keeps the guest's Web Worker alive and opens the editor in an iframe. The editor gets its own URL and uses relative paths to load JavaScript, CSS, and the flow API.
-- A Service Worker routes HTTP requests under `editor/<session-id>/` back to the tab that started the guest. The page forwards them to Node-RED using unkernel's `vm.fetch()`. The editor receives live updates by polling a bridge to the guest's WebSocket.
-- The repository root contains the static site. To try a local checkout, run `python3 -m http.server 18883 --bind 127.0.0.1` from the repository root and open `http://127.0.0.1:18883/`. GitHub Pages serves the demo over HTTPS.
+- The demo starts unkernel `v0.2.0-261126-fd204d3` in a Web Worker and mounts `alpine.erofs` as the Alpine root filesystem. It loads Node-RED 5.0.10 and Node.js 24.22.3 from a compressed ext4 image.
+- The parent page keeps the guest's Web Worker running and opens the Node-RED editor in an iframe with its own URL. The editor loads JavaScript, CSS, and the flow API relative to that URL.
+- The service worker forwards HTTP requests under `editor/<session-id>/` to the tab that started the guest. The parent page then uses unkernel's `vm.fetch()` to send them to Node-RED in the guest. The editor receives live notifications from the guest's WebSocket through HTTP polling.
+- **Reload editor** reloads the iframe. The guest keeps running, so deployed flows and installed nodes remain available. Deploy or export any pending edits first.
+- The repository root contains the static site files. To try the demo locally, run `python3 -m http.server 18883 --bind 127.0.0.1` from the checkout and open `http://127.0.0.1:18883/`. GitHub Pages serves the demo over HTTPS.
 
-### Try an HTTP In node
+## Guest terminal
 
-Inside the guest, `http://localhost:1880/api/test` points to its own Node-RED instance. From the same browser, a request to `api/test` relative to the editor URL reaches the HTTP In node through the Service Worker. After deploying a flow with an HTTP In node for `GET /test`, run this in the demo page's top-level developer console.
+Click **Terminal** at the top of the demo to open a shell in the running guest. For example, run `uname -m` to check the guest architecture. Click **Close** to return to the editor.
+
+## Connect the guest to the internet through a Wisp relay
+
+The demo starts offline by default. Set `?wisp=` in the demo URL to connect the guest to external services through a Wisp relay. For example, you can call an external API with an HTTP Request node or install nodes from the npm registry using **Manage palette**. The relay's configuration determines which destinations the guest can reach.
+
+### 1. Start a Wisp relay on the host OS running your browser
+
+One simple option is to run the [Python Wisp server](https://github.com/MercuryWorkshop/wisp-server-python) with uv and Python 3. uv installs the dependencies for the command and manages the virtual environment. [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
+
+```sh
+uv run --no-project --with wisp-python python -m wisp.server --host 127.0.0.1 --port 18887
+```
+
+### 2. Open the demo with the relay URL
+
+Leave the relay running and open this URL in a browser on the same host.
+
+<https://utaani.github.io/unkernel-node-red/?wisp=ws%3A%2F%2F127.0.0.1%3A18887%2F>
+
+This URL passes the percent-encoded relay address `ws://127.0.0.1:18887/` in the `wisp` query parameter. If you change the port or address, update the parameter accordingly. Use `ws://` for loopback addresses and `wss://` for relays on another host.
+
+To test the connection, wire an Inject node to an HTTP Request node and then to a Debug node. Set the HTTP Request node to the HTTPS URL of an external service, deploy the flow, and click Inject. Check the response in the Debug sidebar. To stop the relay, press `Ctrl+C` in the terminal where it is running.
+
+To reduce npm download timeouts observed over Wisp, the demo lowers npm's concurrent connection limit from 15 to 4 per origin in sessions that use Wisp.
+
+## Custom nodes and settings
+
+- **With Wisp**, use **Manage palette** to search for and install npm packages.
+- **Without Wisp**, use **Manage palette** to upload an npm package as a `.tgz` file. If it has dependencies, bundle them or install them first, starting with the packages they depend on.
+
+Installed nodes are lost when you reload the entire demo page.
+
+The bundled [settings.js](settings.js) disables the welcome tours. Changing these settings requires rebuilding the guest image.
+
+## Try an HTTP In node
+
+Configure an HTTP In node for `GET /test`, wire it through a Template node or similar to set the response body, then wire it to an HTTP Response node and deploy.
+
+Inside the guest, `http://localhost:1880/api/test` points to Node-RED. In the same browser, request `api/test` relative to the editor's URL to reach the HTTP In node through the service worker. After deploying, run this in the browser's developer console on the top-level demo page.
 
 ```js
 const editor = document.querySelector('iframe');
@@ -39,17 +73,24 @@ const response = await fetch(new URL('api/test', editor.src));
 console.log(response.status, await response.text());
 ```
 
-A request to `/api/test` directly under the GitHub Pages project URL goes to the static host. To accept webhook requests from other devices or services, you need a runtime that can accept external requests.
+A request to `/api/test` directly under the GitHub Pages project URL goes to the static host. To call the endpoint as a webhook from another device or an external service, run the flow in an environment that accepts incoming requests.
+
+## Try a dashboard
+
+1. Start the demo with Wisp and use **Manage palette** to install `@flowfuse/node-red-dashboard` (FlowFuse Dashboard 2).
+2. Wire an Inject node to a Dashboard `text` node. Assign the widget to a page and group, set the dashboard base path to `/dashboard`, and deploy.
+3. Click **Open Dashboard** at the top of the demo to open the dashboard from the same guest in a new tab. Keep the demo tab open and click Inject to see the dashboard update.
+
+The top-level button opens `editor/<session-id>/api/dashboard/` for the current session. If you use a different base path, edit the part after `/api/` in the new tab's URL. The **Open Dashboard** button in the Dashboard 2 sidebar opens a URL without the session ID, which returns a GitHub Pages 404 in this demo.
 
 ## Current limitations on GitHub Pages
 
-- **Outgoing connections from the HTTP Request node.** The published demo leaves the guest's outbound network unconfigured, so the guest cannot reach the internet.
-- **Public APIs and webhooks using HTTP In nodes.** GitHub Pages serves static files and cannot forward outside requests to a guest running in a visitor's browser. You can test the endpoint from the same browser using the example above.
-- **Installing custom nodes from the npm registry through Manage palette.** The guest and its npm client run offline. You can upload a `.tgz` file. If it has dependencies, make all direct and transitive dependencies available first or bundle them with the package. When separate offline installs work for those packages, install dependencies before the packages that use them.
+- **Public HTTP In endpoints and dashboard URLs.** GitHub Pages serves static files. The guest handling these requests runs in the browser session that launched the demo. Wisp provides outbound connections from the guest.
+- **Guest internet access without Wisp.** Calling external APIs and installing nodes from the npm registry require a configured Wisp relay.
 
 ## Warranty
 
-This demo is provided without warranty. It is hosted within the [GitHub Pages usage limits](https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits).
+This demo is provided without warranty and is hosted within the [GitHub Pages usage limits](https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits).
 
 ## Licenses
 
