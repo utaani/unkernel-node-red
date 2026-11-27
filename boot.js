@@ -26,6 +26,15 @@ navigator.serviceWorker.addEventListener('message', async ({ data, ports }) => {
   }
 });
 
+async function registerEditorSession(registration) {
+  const channel = new MessageChannel();
+  const registered = new Promise(resolve => { channel.port1.onmessage = resolve; });
+  registration.active.postMessage({ instance }, [channel.port2]);
+  const { data: registrationResult } = await registered;
+  channel.port1.close();
+  if (registrationResult?.error) throw new Error(registrationResult.error);
+}
+
 async function boot() {
   const relay = new URLSearchParams(location.search).get('wisp');
   let net;
@@ -77,15 +86,11 @@ async function boot() {
   });
   vm.write(net ? 'npm_config_offline=false npm_config_maxsockets=4 sh /data/start-guest\n' : 'sh /data/start-guest\n');
   await ready;
-  const channel = new MessageChannel();
-  const registered = new Promise(resolve => { channel.port1.onmessage = resolve; });
-  registration.active.postMessage({ instance }, [channel.port2]);
-  const { data: registrationResult } = await registered;
-  channel.port1.close();
-  if (registrationResult?.error) throw new Error(registrationResult.error);
+  await registerEditorSession(registration);
   const editor = document.createElement('iframe');
   editor.title = localize('Node-RED エディター', 'Node-RED editor');
-  editor.src = './editor/' + instance + '/';
+  const editorUrl = './editor/' + instance + '/';
+  editor.src = editorUrl;
   status.textContent = 'Node-RED';
   document.body.append(editor);
   enableTerminal(vm, localize);
@@ -98,7 +103,18 @@ async function boot() {
 
   const reloadEditor = document.querySelector('#reload-editor');
   reloadEditor.disabled = false;
-  reloadEditor.addEventListener('click', () => editor.contentWindow.location.reload());
+  reloadEditor.addEventListener('click', async () => {
+    try {
+      await navigator.serviceWorker.register('./sw.js');
+      const registration = await navigator.serviceWorker.ready;
+      await registerEditorSession(registration);
+      editor.src = editorUrl;
+      status.textContent = 'Node-RED';
+    } catch (error) {
+      status.textContent = localize('エディターを再読み込みできませんでした。', 'Could not reload the editor. ') + error.message;
+      console.error(error);
+    }
+  });
   vm.exited.then(() => {
     openDashboard.disabled = true;
     reloadEditor.disabled = true;
