@@ -4,6 +4,7 @@ Changes to the public browser demo, grouped by commit date.
 
 ## 2026-11-27
 
+- Added the dashboard screenshot and a caption about Microsoft Edge split screen to the English README. ([bc33e51](https://github.com/utaani/unkernel-node-red/commit/bc33e510e1b227c10228b6fae168fd8b5354604c))
 - Documented the Dashboard 2 editor 404 workaround and added a shared screenshot of the setting. ([512a12b](https://github.com/utaani/unkernel-node-red/commit/512a12b8f644e732854624b45c03c3d7b6f3f86b))
 - Made Reload editor re-register the service worker and reconnect the current session before reopening the editor. ([e015cc7](https://github.com/utaani/unkernel-node-red/commit/e015cc7bba82890cdc0bdf8c373df9b9c3f9f42d))
 - Switched both README guides to the Node.js Wisp relay via npx and documented Dashboard 2 installation timing and the demo’s two-minute response limit. ([1420c12](https://github.com/utaani/unkernel-node-red/commit/1420c12ba118c46368f0a275bd0ed4a1d0385361))
