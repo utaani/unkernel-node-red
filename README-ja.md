@@ -11,7 +11,7 @@
 ## 試し方
 
 1. WebAssembly JSPI に対応するブラウザでデモを開きます。Chromium 156 で動作を確認しています。デスクトップ版の Chrome と Edge は 137 以降、Firefox は 153 以降、Safari は 27 以降で JSPI に対応しています。JSPI が利用できない環境では起動できません。 [ブラウザごとの JSPI 対応状況](https://web-platform-dx.github.io/web-features-explorer/features/wasm-jspi/)
-2. 起動が終わると、空の「フロー 1」が表示されます。初回の配信量は約 67.6 MiB で、起動は約 1〜2 分でした。
+2. 起動が終わると、Node-REDのフローエディタが表示されます。初回の配信量は約 67.6 MiB で、起動は約 1〜2 分でした。
 3. たとえば Inject ノードと Debug ノードをつなぎ、デプロイしてから Inject のボタンを押すと、Debug 欄にメッセージが出ます。
 
 編集内容はそのタブの試用環境に保存されます。デモのページ全体を再読み込みすると初期状態に戻るので、残したいフローは Node-RED のメニューから JSON にエクスポートしてください。
