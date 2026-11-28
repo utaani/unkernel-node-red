@@ -79,7 +79,7 @@ To reduce npm download timeouts observed over Wisp, the demo lowers npm's concur
 
 Installed nodes are lost when you reload the entire demo page.
 
-The bundled [settings.js](settings.js) disables the welcome tours. Changing these settings requires rebuilding the guest image.
+The bundled [settings.js](settings.js) disables the welcome tours and telemetry(update notification) funttion. Changing these settings requires rebuilding the guest image.
 
 ## Try an HTTP In node
 
