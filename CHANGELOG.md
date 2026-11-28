@@ -4,6 +4,7 @@ Changes to the public browser demo, grouped by commit date.
 
 ## 2026-11-28
 
+- Clarified startup and notification settings in the English README and linked readers to backups for installed nodes and settings. ([12cda56](https://github.com/utaani/unkernel-node-red/commit/12cda562c5a74d47dcf9e89262ca7d09e287b1fc))
 - Documented the parent window controls and added the English toolbar screenshot to the guide. ([3189206](https://github.com/utaani/unkernel-node-red/commit/318920678a4078149ac47b9644fe0c69c90b3b7d))
 - Listed the MIT licenses for xterm.js and its fit addon in both READMEs. ([a2fedbe](https://github.com/utaani/unkernel-node-red/commit/a2fedbed56aed55de06f28f498c00a306aec9b34))
 - Disabled the update notification consent dialog by default in new guests. ([622e005](https://github.com/utaani/unkernel-node-red/commit/622e00562031de7699be3b82dd2229d1884856e5))
