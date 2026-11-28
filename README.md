@@ -11,7 +11,7 @@ This demo uses [unkernel](https://github.com/pithings/unkernel) to run [Node-RED
 ## Try it out
 
 1. Open the demo in a browser that supports WebAssembly JSPI. We tested the demo in Chromium 156. Desktop Chrome and Edge support JSPI from version 137, Firefox from version 153, and Safari from version 27. The demo requires JSPI to start. [JSPI browser support](https://web-platform-dx.github.io/web-features-explorer/features/wasm-jspi/)
-2. Once startup finishes, an empty **Flow 1** appears. The initial download is about 67.6 MiB. In testing, startup took about one to two minutes.
+2. Once startup finishes, Node-RED flow editor appears. The initial download is about 67.6 MiB. In testing, startup took about one to two minutes.
 3. Connect an Inject node to a Debug node, deploy the flow, and click the Inject button. A message appears in the Debug sidebar.
 
 Your changes are saved in the session running in that tab. Reloading the entire demo page starts a fresh session. To keep your flows, export them as JSON from the Node-RED menu.
