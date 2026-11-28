@@ -4,7 +4,7 @@
 
 [Open the demo](https://utaani.github.io/unkernel-node-red/)
 
-<img width="1282" height="929" alt="Node-RED editor running in the browser" src="ss-en.png?raw=true" />
+<img alt="Node-RED editor running in the browser" src="ss-en.png?raw=true" />
 
 This demo uses [unkernel](https://github.com/pithings/unkernel) to run [Node-RED](https://github.com/node-red/node-red) inside your browser. GitHub Pages serves the files, and the demo opens an empty Node-RED editor. You can try Node-RED without setting up a server.
 
@@ -24,9 +24,29 @@ Your changes are saved in the session running in that tab. Reloading the entire 
 - **Reload editor** reloads the iframe. The guest keeps running, so deployed flows and installed nodes remain available. Deploy or export any pending edits first.
 - The repository root contains the static site files. To try the demo locally, run `python3 -m http.server 18883 --bind 127.0.0.1` from the checkout and open `http://127.0.0.1:18883/`. GitHub Pages serves the demo over HTTPS.
 
-## Guest terminal
+## Parent window
 
-Click **Terminal** at the top of the demo to open a shell in the running guest. For example, run `uname -m` to check the guest architecture. Click **Close** to return to the editor.
+The parent page runs the unkernel guest OS and displays the Node-RED flow editor in an iframe. The buttons above the editor let you work with the guest from the same browser tab.
+
+<img alt="Parent window with controls above the Node-RED editor" src="parent-windows-en.png?raw=true" />
+
+### Terminal
+
+Click **Terminal** to open a shell in the running Alpine Linux guest. For example, run `uname -m` to check its architecture. Click **Close** to return to the editor.
+
+### Reload editor
+
+Reloading the entire page starts a fresh guest and resets flows and installed custom nodes. If the flow editor stops responding, click **Reload editor** to reload its frame while keeping the guest running.
+
+### Open Dashboard
+
+After installing [FlowFuse Dashboard](https://dashboard.flowfuse.com/) and deploying a dashboard, click **Open Dashboard** to open the dashboard in a new tab.
+
+### Backup and Restore
+
+Click **Backup** to save the guest's `/data/user` directory to your computer as a `tar.gz` archive. This saves your deployed flows and installed custom nodes. Creating the archive can take a while. Wait for the **Backup saved** message or, in browsers that download the file directly, for the download to finish.
+
+To continue from a backup, click **Restore** and select the archive you saved. The guest starts again in the same tab with the restored files. Startup may take a little while.
 
 ## Connect the guest to the internet through a Wisp relay
 
