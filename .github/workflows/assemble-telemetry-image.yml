@@ -1,0 +1,52 @@
+name: Assemble telemetry settings image
+on:
+  push:
+    branches: [build/telemetry-default-20261128]
+permissions:
+  contents: write
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Assemble and verify guest image
+        shell: bash
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/result" 5622cc3cb1ab0b0c6b503a1c17e25f0221df6dae
+          python3 - "$RUNNER_TEMP/result" <<'PY'
+          import gzip, json, sys, hashlib, base64
+          from pathlib import Path
+          spec = json.loads(Path('image-delta.json').read_text())
+          root = Path(sys.argv[1])
+          image = root / 'node-red.kwsparse.gz'
+          raw = bytearray(gzip.decompress(image.read_bytes()))
+          assert hashlib.sha256(raw).hexdigest() == spec['before']
+          for offset, encoded in spec['blocks'].items():
+              offset = int(offset)
+              block = base64.b64decode(encoded)
+              raw[offset:offset+len(block)] = block
+          assert hashlib.sha256(raw).hexdigest() == spec['after']
+          image.write_bytes(gzip.compress(raw, compresslevel=6, mtime=0))
+          settings = root / 'settings.js'
+          source = settings.read_text()
+          needle = '  editorTheme: {'
+          assert source.count(needle) == 1
+          settings.write_text(source.replace(needle, '  telemetry: {\n    enabled: false,\n    updateNotification: false,\n  },\n' + needle))
+          for name, old, new in [('boot.js','kwsparse.gz?v=2','kwsparse.gz?v=3'),('index.html','boot.js?v=12','boot.js?v=13')]:
+              file = root / name
+              source = file.read_text()
+              assert source.count(old) == 1
+              file.write_text(source.replace(old,new))
+          PY
+          cd "$RUNNER_TEMP/result"
+          git config user.name 'Takeshi Ueno'
+          git config user.email 'utaani@ueno.org'
+          git var GIT_AUTHOR_IDENT
+          git var GIT_COMMITTER_IDENT
+          git add -- node-red.kwsparse.gz settings.js boot.js index.html
+          git diff --cached --check
+          git commit -m 'Disable update notification consent in new guests'
+          git log -1 --format='%h %an <%ae> %cn <%ce>'
+          git push origin HEAD:refs/heads/build/telemetry-image-20261128
