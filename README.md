@@ -114,5 +114,6 @@ The license for this demo's own code is under consideration. Bundled third-party
 | `sdk/unkernel.wasm` | The unkernel Linux kernel component is GPL-2.0-only. [unkernel GPL license](https://github.com/pithings/unkernel/blob/fd204d3/LICENSE) · [Upstream revision](https://github.com/pithings/unkernel/tree/fd204d3) |
 | `alpine.erofs` | Alpine userspace for AArch64. [Upstream release](https://github.com/pithings/unkernel/releases/tag/v0.2.0-261126-fd204d3) |
 | `node-red.kwsparse.gz` | Includes [Node-RED (Apache-2.0)](https://github.com/node-red/node-red/blob/main/LICENSE), [Node.js and bundled components](https://github.com/nodejs/node/blob/v24.22.3/LICENSE), Alpine libraries, and npm dependencies. |
+| xterm.js and the fit addon in `terminal/` | MIT. [xterm.js license](terminal/LICENSE-xterm) · [Fit addon license](terminal/LICENSE-addon-fit) |
 
 Third-party license texts, copyright notices, NOTICE files, and the way to make corresponding source available for GPL-covered binaries are under review. The links above identify the upstream projects and versions used.

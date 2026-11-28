@@ -112,5 +112,6 @@ Windows で Node.js 版の Wisp リレーを使ったテストでは、「ノー
 | `sdk/unkernel.wasm` | unkernel の Linux カーネル部分は GPL-2.0-only。[unkernel の GPL ライセンス](https://github.com/pithings/unkernel/blob/fd204d3/LICENSE)・[使用版の上流コミット](https://github.com/pithings/unkernel/tree/fd204d3) |
 | `alpine.erofs` | AArch64 版の Alpine ユーザーランド。[上流の配布物](https://github.com/pithings/unkernel/releases/tag/v0.2.0-261126-fd204d3) |
 | `node-red.kwsparse.gz` | [Node-RED（Apache-2.0）](https://github.com/node-red/node-red/blob/main/LICENSE)、[Node.js と同梱コンポーネント](https://github.com/nodejs/node/blob/v24.22.3/LICENSE)、Alpine のライブラリ、npm 依存パッケージを収録 |
+| `terminal/` の xterm.js と fit アドオン | MIT。[xterm.js のライセンス](terminal/LICENSE-xterm)・[fit アドオンのライセンス](terminal/LICENSE-addon-fit) |
 
 配布物に含まれる第三者ソフトウェアのライセンス文書・著作権表示・NOTICE、および GPL 対象バイナリの対応ソースの提供方法は確認中です。表の上流リンクは使用したソフトウェアの参照先です。
