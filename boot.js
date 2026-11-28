@@ -8,6 +8,11 @@ const localize = (ja, en) => japanese ? ja : en;
 const instance = crypto.randomUUID();
 let vm;
 
+function confirmPageExit(event) {
+  event.preventDefault();
+  event.returnValue = true;
+}
+
 navigator.serviceWorker.addEventListener('message', async ({ data, ports }) => {
   if (data.instance !== instance || !ports[0]) return;
   const port = ports[0];
@@ -55,8 +60,10 @@ async function restoreUserData(file) {
 
 async function boot(backupFile) {
   const relay = new URLSearchParams(location.search).get('wisp');
+  const wispStatus = document.querySelector('#wisp-status');
   let net;
   if (relay) {
+    wispStatus.textContent = localize('Wisp リレー: URL エラー', 'Wisp relay: invalid URL');
     const endpoint = new URL(relay);
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname);
     if (endpoint.username || endpoint.password ||
@@ -65,6 +72,9 @@ async function boot(backupFile) {
     }
     net = { kind: 'net', backend: { kind: 'wisp', servers: endpoint.href } };
   }
+  wispStatus.textContent = net
+    ? localize('Wisp リレー: 設定済み', 'Wisp relay: configured')
+    : localize('Wisp リレー: 未設定', 'Wisp relay: not configured');
   const registration = await navigator.serviceWorker.register('./sw.js');
   await navigator.serviceWorker.ready;
   async function loadDisk(file, name) {
@@ -113,6 +123,7 @@ async function boot(backupFile) {
   status.textContent = 'Node-RED';
   document.body.append(editor);
   enableTerminal(vm, localize);
+  window.addEventListener('beforeunload', confirmPageExit);
   backupButton.disabled = false;
   backupButton.addEventListener('click', async () => {
     backupButton.disabled = true;
@@ -177,6 +188,7 @@ async function boot(backupFile) {
     }
   });
   vm.exited.then(() => {
+    window.removeEventListener('beforeunload', confirmPageExit);
     openDashboard.disabled = true;
     reloadEditor.disabled = true;
   });
@@ -225,6 +237,7 @@ restoreFile.addEventListener('change', async () => {
     await withRestoreStore(store => store.put(file, id));
     const target = new URL(location.href);
     target.searchParams.set('restore', id);
+    window.removeEventListener('beforeunload', confirmPageExit);
     location.replace(target.href);
   } catch (error) {
     status.textContent = localize('バックアップを開けませんでした。', 'Could not open the backup. ') + error.message;
