@@ -35,7 +35,25 @@ async function registerEditorSession(registration) {
   if (registrationResult?.error) throw new Error(registrationResult.error);
 }
 
-async function boot() {
+const backupButton = document.querySelector('#backup');
+const restoreButton = document.querySelector('#restore');
+const restoreFile = document.querySelector('#restore-file');
+backupButton.textContent = localize('バックアップ', 'Backup');
+restoreButton.textContent = localize('リストア', 'Restore');
+
+async function runArchive(args, input) {
+  const result = await vm.exec('/bin/tar', args, { input, encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 });
+  if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr).trim() || 'tar failed');
+  return result.stdout;
+}
+
+async function restoreUserData(file) {
+  if (!file.size || file.size > 256 * 1024 * 1024) throw new Error('Invalid backup size');
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  await runArchive(['-xzf', '-', '-C', '/data/user'], bytes);
+}
+
+async function boot(backupFile) {
   const relay = new URLSearchParams(location.search).get('wisp');
   let net;
   if (relay) {
@@ -71,6 +89,7 @@ async function boot() {
     },
   });
   globalThis.demoBootLog = () => output;
+  if (backupFile) await restoreUserData(backupFile);
   const ready = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(output.slice(-700))), 240000);
     vm.onOutput(() => {
@@ -94,6 +113,38 @@ async function boot() {
   status.textContent = 'Node-RED';
   document.body.append(editor);
   enableTerminal(vm, localize);
+  backupButton.disabled = false;
+  backupButton.addEventListener('click', async () => {
+    backupButton.disabled = true;
+    try {
+      const filename = 'node-red-backup.tar.gz';
+      const file = typeof window.showSaveFilePicker === 'function'
+        ? await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{ description: 'Node-RED backup', accept: { 'application/gzip': ['.gz', '.tgz'] } }],
+        })
+        : null;
+      const bytes = await runArchive(['-czf', '-', '-C', '/data/user', '.']);
+      const archive = new Blob([bytes], { type: 'application/gzip' });
+      if (file) {
+        await archive.stream().pipeTo(await file.createWritable());
+      } else {
+        const url = URL.createObjectURL(archive);
+        const download = document.createElement('a');
+        download.href = url;
+        download.download = filename;
+        download.click();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      }
+      status.textContent = 'Node-RED';
+    } catch (error) {
+      if (error.name !== 'AbortError') {
+        status.textContent = localize('バックアップに失敗しました。', 'Backup failed. ') + error.message;
+      }
+    } finally {
+      backupButton.disabled = false;
+    }
+  });
 
   const openDashboard = document.querySelector('#open-dashboard');
   openDashboard.disabled = false;
@@ -121,7 +172,74 @@ async function boot() {
   });
 }
 
-boot().catch(error => {
-  status.textContent = localize('起動できませんでした。', 'Startup failed. ') + error.message;
-  console.error(error);
+function start(file) {
+  boot(file).catch(error => {
+    status.textContent = localize('起動できませんでした。', 'Startup failed. ') + error.message;
+    console.error(error);
+  });
+}
+
+// Pass the selected archive across a same-tab navigation without putting it in the URL.
+async function withRestoreStore(operation) {
+  const db = await new Promise((resolve, reject) => {
+    const request = indexedDB.open('unkernel-node-red-restore:' + location.pathname, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('pending');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = db.transaction('pending', 'readwrite');
+      const result = operation(transaction.objectStore('pending'));
+      transaction.oncomplete = () => resolve(result.result);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+const pageUrl = new URL(location.href);
+const restoreId = pageUrl.searchParams.get('restore');
+restoreButton.addEventListener('click', () => restoreFile.click());
+restoreFile.addEventListener('change', async () => {
+  const [file] = restoreFile.files;
+  if (!file) return;
+  restoreFile.value = '';
+  restoreButton.disabled = true;
+  try {
+    if (file.size < 2 || file.size > 256 * 1024 * 1024) throw new Error('Invalid backup size');
+    const header = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+    if (header[0] !== 0x1f || header[1] !== 0x8b) throw new Error('Expected a gzip backup');
+    const id = crypto.randomUUID();
+    await withRestoreStore(store => store.put(file, id));
+    const target = new URL(location.href);
+    target.searchParams.set('restore', id);
+    location.replace(target.href);
+  } catch (error) {
+    status.textContent = localize('バックアップを開けませんでした。', 'Could not open the backup. ') + error.message;
+    restoreButton.disabled = false;
+  }
 });
+
+if (restoreId && restoreId !== '1') {
+  restoreButton.disabled = true;
+  withRestoreStore(store => {
+    const pending = store.get(restoreId);
+    store.delete(restoreId);
+    return pending;
+  }).then(file => {
+    if (!file) throw new Error('Backup file is no longer available');
+    pageUrl.searchParams.delete('restore');
+    history.replaceState(null, '', pageUrl);
+    restoreButton.disabled = false;
+    start(file);
+  }).catch(error => {
+    status.textContent = localize('バックアップを開けませんでした。', 'Could not open the backup. ') + error.message;
+    restoreButton.disabled = false;
+  });
+} else if (restoreId === '1') {
+  status.textContent = localize('「リストア」を押してバックアップを選択してください。', 'Click Restore to select your backup.');
+} else {
+  start();
+}

@@ -18,6 +18,9 @@ iframe { display: block; width: 100%; height: calc(100dvh - 50px); border: 0 }
 <header>
   <span id="status" role="status">Starting Node-RED…</span>
   <div id="editor-actions">
+    <button id="backup" type="button" disabled>Backup</button>
+    <button id="restore" type="button">Restore</button>
+    <input id="restore-file" type="file" accept=".gz,.tgz" hidden>
     <button id="open-dashboard" type="button" disabled>Open Dashboard</button>
     <button id="reload-editor" type="button" disabled>Reload editor</button>
     <button id="open-terminal" type="button" aria-haspopup="dialog" disabled>Terminal</button>
@@ -41,5 +44,5 @@ if (/^ja(?:-|$)/i.test(navigator.language)) {
   document.querySelector('#close-terminal').textContent = '閉じる';
 }
 </script>
-<script type="module" src="./boot.js?v=10"></script>
+<script type="module" src="./boot.js?v=11"></script>
 </html>
