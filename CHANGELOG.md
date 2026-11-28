@@ -2,6 +2,10 @@
 
 Changes to the public browser demo, grouped by commit date.
 
+## 2026-11-28
+
+- Added local backups for Node-RED flows, settings, and installed nodes, with same-tab restore and a save dialog in supported browsers. ([d480f44](https://github.com/utaani/unkernel-node-red/commit/d480f4469155b74373383dc39c21f7ac59f4b193))
+
 ## 2026-11-27
 
 - Added the dashboard screenshot and a caption about Microsoft Edge split screen to the English README. ([bc33e51](https://github.com/utaani/unkernel-node-red/commit/bc33e510e1b227c10228b6fae168fd8b5354604c))
