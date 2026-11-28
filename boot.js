@@ -75,7 +75,7 @@ async function boot(backupFile) {
   }
   const [alpine, disk] = await Promise.all([
     fetch('./alpine.erofs'),
-    loadDisk('./node-red.kwsparse.gz?v=2', 'node-red-aarch64-data'),
+    loadDisk('./node-red.kwsparse.gz?v=3', 'node-red-aarch64-data'),
   ]);
   if (!alpine.ok) throw new Error(localize('Alpine を取得できませんでした。', 'Could not download Alpine.') + ' HTTP ' + alpine.status);
   const distro = { kind: 'http', url: URL.createObjectURL(await alpine.blob()) };

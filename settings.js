@@ -11,6 +11,10 @@ module.exports = {
       allowInstall: false,
     },
   },
+  telemetry: {
+    enabled: false,
+    updateNotification: false,
+  },
   editorTheme: {
     tours: false,
   },
