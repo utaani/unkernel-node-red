@@ -4,6 +4,7 @@ Changes to the public browser demo, grouped by commit date.
 
 ## 2026-11-28
 
+- Added backup progress and result messages, with a timeout for compression and file writes. ([04581b5](https://github.com/utaani/unkernel-node-red/commit/04581b5b492963b0d3aaf910a627feadcc2192d9))
 - Added local backups for Node-RED flows, settings, and installed nodes, with same-tab restore and a save dialog in supported browsers. ([d480f44](https://github.com/utaani/unkernel-node-red/commit/d480f4469155b74373383dc39c21f7ac59f4b193))
 
 ## 2026-11-27
