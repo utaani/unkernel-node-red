@@ -41,8 +41,8 @@ const restoreFile = document.querySelector('#restore-file');
 backupButton.textContent = localize('バックアップ', 'Backup');
 restoreButton.textContent = localize('リストア', 'Restore');
 
-async function runArchive(args, input) {
-  const result = await vm.exec('/bin/tar', args, { input, encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 });
+async function runArchive(args, input, signal) {
+  const result = await vm.exec('/bin/tar', args, { input, signal, encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 });
   if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr).trim() || 'tar failed');
   return result.stdout;
 }
@@ -116,18 +116,28 @@ async function boot(backupFile) {
   backupButton.disabled = false;
   backupButton.addEventListener('click', async () => {
     backupButton.disabled = true;
+    const filename = 'node-red-backup.tar.gz';
+    let file;
+    let choosingFile = false;
     try {
-      const filename = 'node-red-backup.tar.gz';
-      const file = typeof window.showSaveFilePicker === 'function'
-        ? await window.showSaveFilePicker({
+      if (typeof window.showSaveFilePicker === 'function') {
+        choosingFile = true;
+        status.textContent = localize('バックアップの保存先を選んでください。', 'Choose where to save the backup.');
+        file = await window.showSaveFilePicker({
           suggestedName: filename,
           types: [{ description: 'Node-RED backup', accept: { 'application/gzip': ['.gz', '.tgz'] } }],
-        })
-        : null;
-      const bytes = await runArchive(['-czf', '-', '-C', '/data/user', '.']);
+        });
+        choosingFile = false;
+      }
+      const signal = AbortSignal.timeout(10 * 60 * 1000);
+      status.textContent = localize('バックアップを圧縮しています…', 'Compressing backup…');
+      const bytes = await runArchive(['-czf', '-', '-C', '/data/user', '.'], undefined, signal);
+      signal.throwIfAborted();
       const archive = new Blob([bytes], { type: 'application/gzip' });
       if (file) {
-        await archive.stream().pipeTo(await file.createWritable());
+        status.textContent = localize('バックアップを書き込んでいます…', 'Writing backup…');
+        await archive.stream().pipeTo(await file.createWritable(), { signal });
+        status.textContent = localize('バックアップを保存しました。', 'Backup saved.');
       } else {
         const url = URL.createObjectURL(archive);
         const download = document.createElement('a');
@@ -135,12 +145,12 @@ async function boot(backupFile) {
         download.download = filename;
         download.click();
         setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        status.textContent = localize('バックアップのダウンロードを開始しました。', 'Backup download started.');
       }
-      status.textContent = 'Node-RED';
     } catch (error) {
-      if (error.name !== 'AbortError') {
-        status.textContent = localize('バックアップに失敗しました。', 'Backup failed. ') + error.message;
-      }
+      status.textContent = choosingFile && error.name === 'AbortError'
+        ? 'Node-RED'
+        : localize('バックアップに失敗しました。', 'Backup failed. ') + error.message;
     } finally {
       backupButton.disabled = false;
     }
